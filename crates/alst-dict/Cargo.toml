@@ -1,0 +1,15 @@
+[package]
+name = "alst-dict"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+alst-core = { path = "../alst-core" }

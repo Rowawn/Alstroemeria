@@ -1,0 +1,707 @@
+[
+  [
+    {
+      "i": 0,
+      "text": "¿",
+      "isWord": false,
+      "norm": "¿",
+      "start": 0,
+      "end": 1,
+      "ann": {}
+    },
+    {
+      "i": 1,
+      "text": "Qué",
+      "isWord": true,
+      "norm": "qué",
+      "start": 1,
+      "end": 4,
+      "ann": {}
+    },
+    {
+      "i": 2,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 4,
+      "end": 5,
+      "ann": {}
+    },
+    {
+      "i": 3,
+      "text": "tal",
+      "isWord": true,
+      "norm": "tal",
+      "start": 5,
+      "end": 8,
+      "ann": {}
+    },
+    {
+      "i": 4,
+      "text": ",",
+      "isWord": false,
+      "norm": ",",
+      "start": 8,
+      "end": 9,
+      "ann": {}
+    },
+    {
+      "i": 5,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 9,
+      "end": 10,
+      "ann": {}
+    },
+    {
+      "i": 6,
+      "text": "Sr",
+      "isWord": true,
+      "norm": "sr",
+      "start": 10,
+      "end": 12,
+      "ann": {}
+    },
+    {
+      "i": 7,
+      "text": ".",
+      "isWord": false,
+      "norm": ".",
+      "start": 12,
+      "end": 13,
+      "ann": {}
+    },
+    {
+      "i": 8,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 13,
+      "end": 14,
+      "ann": {}
+    },
+    {
+      "i": 9,
+      "text": "López",
+      "isWord": true,
+      "norm": "lópez",
+      "start": 14,
+      "end": 19,
+      "ann": {}
+    },
+    {
+      "i": 10,
+      "text": "?",
+      "isWord": false,
+      "norm": "?",
+      "start": 19,
+      "end": 20,
+      "ann": {}
+    },
+    {
+      "i": 11,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 20,
+      "end": 21,
+      "ann": {}
+    }
+  ],
+  [
+    {
+      "i": 12,
+      "text": "¡",
+      "isWord": false,
+      "norm": "¡",
+      "start": 21,
+      "end": 22,
+      "ann": {}
+    },
+    {
+      "i": 13,
+      "text": "Muy",
+      "isWord": true,
+      "norm": "muy",
+      "start": 22,
+      "end": 25,
+      "ann": {}
+    },
+    {
+      "i": 14,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 25,
+      "end": 26,
+      "ann": {}
+    },
+    {
+      "i": 15,
+      "text": "bien",
+      "isWord": true,
+      "norm": "bien",
+      "start": 26,
+      "end": 30,
+      "ann": {}
+    },
+    {
+      "i": 16,
+      "text": "!",
+      "isWord": false,
+      "norm": "!",
+      "start": 30,
+      "end": 31,
+      "ann": {}
+    },
+    {
+      "i": 17,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 31,
+      "end": 32,
+      "ann": {}
+    }
+  ],
+  [
+    {
+      "i": 18,
+      "text": "Vivo",
+      "isWord": true,
+      "norm": "vivo",
+      "start": 32,
+      "end": 36,
+      "ann": {}
+    },
+    {
+      "i": 19,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 36,
+      "end": 37,
+      "ann": {}
+    },
+    {
+      "i": 20,
+      "text": "en",
+      "isWord": true,
+      "norm": "en",
+      "start": 37,
+      "end": 39,
+      "ann": {}
+    },
+    {
+      "i": 21,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 39,
+      "end": 40,
+      "ann": {}
+    },
+    {
+      "i": 22,
+      "text": "EE",
+      "isWord": true,
+      "norm": "ee",
+      "start": 40,
+      "end": 42,
+      "ann": {}
+    },
+    {
+      "i": 23,
+      "text": ".",
+      "isWord": false,
+      "norm": ".",
+      "start": 42,
+      "end": 43,
+      "ann": {}
+    },
+    {
+      "i": 24,
+      "text": "UU",
+      "isWord": true,
+      "norm": "uu",
+      "start": 43,
+      "end": 45,
+      "ann": {}
+    },
+    {
+      "i": 25,
+      "text": ".",
+      "isWord": false,
+      "norm": ".",
+      "start": 45,
+      "end": 46,
+      "ann": {}
+    },
+    {
+      "i": 26,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 46,
+      "end": 47,
+      "ann": {}
+    },
+    {
+      "i": 27,
+      "text": "desde",
+      "isWord": true,
+      "norm": "desde",
+      "start": 47,
+      "end": 52,
+      "ann": {}
+    },
+    {
+      "i": 28,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 52,
+      "end": 53,
+      "ann": {}
+    },
+    {
+      "i": 29,
+      "text": "1",
+      "isWord": false,
+      "norm": "1",
+      "start": 53,
+      "end": 54,
+      "ann": {}
+    },
+    {
+      "i": 30,
+      "text": "9",
+      "isWord": false,
+      "norm": "9",
+      "start": 54,
+      "end": 55,
+      "ann": {}
+    },
+    {
+      "i": 31,
+      "text": "9",
+      "isWord": false,
+      "norm": "9",
+      "start": 55,
+      "end": 56,
+      "ann": {}
+    },
+    {
+      "i": 32,
+      "text": "9",
+      "isWord": false,
+      "norm": "9",
+      "start": 56,
+      "end": 57,
+      "ann": {}
+    },
+    {
+      "i": 33,
+      "text": "…",
+      "isWord": false,
+      "norm": "…",
+      "start": 57,
+      "end": 58,
+      "ann": {}
+    },
+    {
+      "i": 34,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 58,
+      "end": 59,
+      "ann": {}
+    },
+    {
+      "i": 35,
+      "text": "y",
+      "isWord": true,
+      "norm": "y",
+      "start": 59,
+      "end": 60,
+      "ann": {}
+    },
+    {
+      "i": 36,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 60,
+      "end": 61,
+      "ann": {}
+    },
+    {
+      "i": 37,
+      "text": "me",
+      "isWord": true,
+      "norm": "me",
+      "start": 61,
+      "end": 63,
+      "ann": {}
+    },
+    {
+      "i": 38,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 63,
+      "end": 64,
+      "ann": {}
+    },
+    {
+      "i": 39,
+      "text": "gusta",
+      "isWord": true,
+      "norm": "gusta",
+      "start": 64,
+      "end": 69,
+      "ann": {}
+    },
+    {
+      "i": 40,
+      "text": ".",
+      "isWord": false,
+      "norm": ".",
+      "start": 69,
+      "end": 70,
+      "ann": {}
+    },
+    {
+      "i": 41,
+      "text": "\n\n",
+      "isWord": false,
+      "norm": "\n\n",
+      "start": 70,
+      "end": 72,
+      "ann": {}
+    }
+  ],
+  [
+    {
+      "i": 42,
+      "text": "Dijo",
+      "isWord": true,
+      "norm": "dijo",
+      "start": 72,
+      "end": 76,
+      "ann": {}
+    },
+    {
+      "i": 43,
+      "text": ":",
+      "isWord": false,
+      "norm": ":",
+      "start": 76,
+      "end": 77,
+      "ann": {}
+    },
+    {
+      "i": 44,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 77,
+      "end": 78,
+      "ann": {}
+    },
+    {
+      "i": 45,
+      "text": "\"",
+      "isWord": false,
+      "norm": "\"",
+      "start": 78,
+      "end": 79,
+      "ann": {}
+    },
+    {
+      "i": 46,
+      "text": "Vamos",
+      "isWord": true,
+      "norm": "vamos",
+      "start": 79,
+      "end": 84,
+      "ann": {}
+    },
+    {
+      "i": 47,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 84,
+      "end": 85,
+      "ann": {}
+    },
+    {
+      "i": 48,
+      "text": "al",
+      "isWord": true,
+      "norm": "al",
+      "start": 85,
+      "end": 87,
+      "ann": {}
+    },
+    {
+      "i": 49,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 87,
+      "end": 88,
+      "ann": {}
+    },
+    {
+      "i": 50,
+      "text": "taller",
+      "isWord": true,
+      "norm": "taller",
+      "start": 88,
+      "end": 94,
+      "ann": {}
+    },
+    {
+      "i": 51,
+      "text": ".",
+      "isWord": false,
+      "norm": ".",
+      "start": 94,
+      "end": 95,
+      "ann": {}
+    },
+    {
+      "i": 52,
+      "text": "\"",
+      "isWord": false,
+      "norm": "\"",
+      "start": 95,
+      "end": 96,
+      "ann": {}
+    },
+    {
+      "i": 53,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 96,
+      "end": 97,
+      "ann": {}
+    }
+  ],
+  [
+    {
+      "i": 54,
+      "text": "Luego",
+      "isWord": true,
+      "norm": "luego",
+      "start": 97,
+      "end": 102,
+      "ann": {}
+    },
+    {
+      "i": 55,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 102,
+      "end": 103,
+      "ann": {}
+    },
+    {
+      "i": 56,
+      "text": "añadió",
+      "isWord": true,
+      "norm": "añadió",
+      "start": 103,
+      "end": 109,
+      "ann": {}
+    },
+    {
+      "i": 57,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 109,
+      "end": 110,
+      "ann": {}
+    },
+    {
+      "i": 58,
+      "text": "d’Artagnan",
+      "isWord": true,
+      "norm": "d'artagnan",
+      "start": 110,
+      "end": 120,
+      "ann": {}
+    },
+    {
+      "i": 59,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 120,
+      "end": 121,
+      "ann": {}
+    },
+    {
+      "i": 60,
+      "text": "-",
+      "isWord": false,
+      "norm": "-",
+      "start": 121,
+      "end": 122,
+      "ann": {}
+    },
+    {
+      "i": 61,
+      "text": "-",
+      "isWord": false,
+      "norm": "-",
+      "start": 122,
+      "end": 123,
+      "ann": {}
+    },
+    {
+      "i": 62,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 123,
+      "end": 124,
+      "ann": {}
+    },
+    {
+      "i": 63,
+      "text": "no",
+      "isWord": true,
+      "norm": "no",
+      "start": 124,
+      "end": 126,
+      "ann": {}
+    },
+    {
+      "i": 64,
+      "text": ",",
+      "isWord": false,
+      "norm": ",",
+      "start": 126,
+      "end": 127,
+      "ann": {}
+    },
+    {
+      "i": 65,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 127,
+      "end": 128,
+      "ann": {}
+    },
+    {
+      "i": 66,
+      "text": "d'Artagnan",
+      "isWord": true,
+      "norm": "d'artagnan",
+      "start": 128,
+      "end": 138,
+      "ann": {}
+    },
+    {
+      "i": 67,
+      "text": ";",
+      "isWord": false,
+      "norm": ";",
+      "start": 138,
+      "end": 139,
+      "ann": {}
+    },
+    {
+      "i": 68,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 139,
+      "end": 140,
+      "ann": {}
+    },
+    {
+      "i": 69,
+      "text": "¡",
+      "isWord": false,
+      "norm": "¡",
+      "start": 140,
+      "end": 141,
+      "ann": {}
+    },
+    {
+      "i": 70,
+      "text": "adiós",
+      "isWord": true,
+      "norm": "adiós",
+      "start": 141,
+      "end": 146,
+      "ann": {}
+    },
+    {
+      "i": 71,
+      "text": "!",
+      "isWord": false,
+      "norm": "!",
+      "start": 146,
+      "end": 147,
+      "ann": {}
+    },
+    {
+      "i": 72,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 147,
+      "end": 148,
+      "ann": {}
+    }
+  ],
+  [
+    {
+      "i": 73,
+      "text": "😀",
+      "isWord": false,
+      "norm": "😀",
+      "start": 148,
+      "end": 150,
+      "ann": {}
+    },
+    {
+      "i": 74,
+      "text": " ",
+      "isWord": false,
+      "norm": " ",
+      "start": 150,
+      "end": 151,
+      "ann": {}
+    },
+    {
+      "i": 75,
+      "text": "Fin",
+      "isWord": true,
+      "norm": "fin",
+      "start": 151,
+      "end": 154,
+      "ann": {}
+    },
+    {
+      "i": 76,
+      "text": "\n",
+      "isWord": false,
+      "norm": "\n",
+      "start": 154,
+      "end": 155,
+      "ann": {}
+    }
+  ]
+]

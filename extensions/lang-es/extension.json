@@ -1,0 +1,23 @@
+{
+  "id": "lang.es",
+  "name": "Spanish",
+  "version": "1.0.0",
+  "kind": "language",
+  "license": "MIT",
+  "language": "es",
+  "apiVersion": "^1.0",
+  "runtime": { "type": "declarative" },
+  "provides": ["es.tokenize"],
+  "declarative": {
+    "tokenizer": { "engine": "regex", "wordChars": "a-zA-ZÀ-ÖØ-öø-ÿ'’-" },
+    "sentenceEnd": ".!?…",
+    "exceptions": ["Sr.", "Sra.", "Srta.", "Dr.", "Dra.", "EE.UU.", "etc.", "p. ej."],
+    "charSubstitutions": { "’": "'" },
+    "rtl": false,
+    "lookupUrls": [
+      { "name": "WordReference", "url": "https://www.wordreference.com/es/en/translation.asp?spen=###" },
+      { "name": "SpanishDict", "url": "https://www.spanishdict.com/translate/###" },
+      { "name": "RAE", "url": "https://dle.rae.es/###" }
+    ]
+  }
+}

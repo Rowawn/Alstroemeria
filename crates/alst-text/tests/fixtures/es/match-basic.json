@@ -1,0 +1,135 @@
+[
+  {
+    "text": "Por favor",
+    "key": "por favor",
+    "words": 2,
+    "status": 3,
+    "sentence": 0
+  },
+  {
+    "text": "a pesar de",
+    "key": "a pesar de",
+    "words": 3,
+    "status": 1,
+    "sentence": 0
+  },
+  {
+    "text": "la",
+    "key": "la",
+    "words": 1,
+    "status": 0,
+    "sentence": 0
+  },
+  {
+    "text": "lluvia",
+    "key": "lluvia",
+    "words": 1,
+    "status": 99,
+    "sentence": 0
+  },
+  {
+    "text": "Pedro",
+    "key": "pedro",
+    "words": 1,
+    "status": 4,
+    "sentence": 0
+  },
+  {
+    "text": "llegó",
+    "key": "llegó",
+    "words": 1,
+    "status": 0,
+    "sentence": 0
+  },
+  {
+    "text": "de repente",
+    "key": "de repente",
+    "words": 2,
+    "status": 5,
+    "sentence": 0
+  },
+  {
+    "text": "Dijo",
+    "key": "dijo",
+    "words": 1,
+    "status": 0,
+    "sentence": 1
+  },
+  {
+    "text": "por\nfavor",
+    "key": "por favor",
+    "words": 2,
+    "status": 3,
+    "sentence": 1
+  },
+  {
+    "text": "y",
+    "key": "y",
+    "words": 1,
+    "status": 0,
+    "sentence": 1
+  },
+  {
+    "text": "luego",
+    "key": "luego",
+    "words": 1,
+    "status": 0,
+    "sentence": 1
+  },
+  {
+    "text": "a pesar",
+    "key": "a pesar",
+    "words": 2,
+    "status": 2,
+    "sentence": 1
+  },
+  {
+    "text": "Gracias",
+    "key": "gracias",
+    "words": 1,
+    "status": 0,
+    "sentence": 2
+  },
+  {
+    "text": "Favor",
+    "key": "favor",
+    "words": 1,
+    "status": 0,
+    "sentence": 3
+  },
+  {
+    "text": "de",
+    "key": "de",
+    "words": 1,
+    "status": 0,
+    "sentence": 3
+  },
+  {
+    "text": "nada",
+    "key": "nada",
+    "words": 1,
+    "status": 0,
+    "sentence": 3
+  },
+  {
+    "text": "Por",
+    "key": "por",
+    "words": 1,
+    "status": 0,
+    "sentence": 4
+  },
+  {
+    "text": "favor",
+    "key": "favor",
+    "words": 1,
+    "status": 0,
+    "sentence": 4
+  },
+  {
+    "text": "no",
+    "key": "no",
+    "words": 1,
+    "status": 0,
+    "sentence": 4
+  }
+]

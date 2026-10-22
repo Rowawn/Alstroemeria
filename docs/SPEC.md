@@ -297,7 +297,7 @@ extensions whose `apiVersion` range it can't satisfy and explains why.
   "provides": ["es.tokenize"],
   "declarative": {
     "tokenizer": { "engine": "regex", "wordChars": "a-zA-ZÀ-ÖØ-öø-ÿ'’-" },
-    "sentenceEnd": ".!?¿¡…",
+    "sentenceEnd": ".!?…",
     "exceptions": ["Sr.", "Sra.", "EE.UU."],
     "charSubstitutions": { "’": "'" },
     "rtl": false,

@@ -7,7 +7,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 |---|---|---|---|
 | 0 | **Spec** | Opus | `docs/SPEC.md`, this roadmap, `CLAUDE.md` exist ✅ |
 | 1 | **Skeleton** | Sonnet | See below ✅ |
-| 2 | **Reader MVP** | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
+| 2 | **Reader MVP** ✅ (see status below) | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
 | 3 | **Extension host** | Opus design, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Sonnet (Opus for deinflection) | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
@@ -35,3 +35,46 @@ Goal: prove the stack on desktop **and Android** before any feature work.
 6. `cargo test --workspace` passes.
 
 Not in M1: tokenizing, the reader, extensions, sync.
+
+## M2 — Reader MVP (plan)
+
+Decisions taken where the spec was silent (none changes the architecture, so no pause was needed):
+
+- **Crates:** new `alst-text` (tokenizer engine, term matching, importers) and `alst-dict`. `alst-text` stays pure
+  (no DB, no Tauri); the shell glues store + tokenizer in a few lines per command. `alst-dict` works on a
+  `rusqlite::Connection` and only touches `local_dict_*` tables (migration `0002`, which also is where they live).
+- **New dependencies (all MIT/Apache/ISC):** `regex`, `zip`, `roxmltree` (EPUB OPF), `scraper` (HTML → text),
+  `ureq` + `encoding_rs` (article fetch), `tauri-plugin-opener` (open lookup URLs in the system browser).
+  File pickers are plain `<input type=file>`; bytes go to Rust as raw IPC bodies, so no dialog plugin and the same path works on Android.
+- **Bundled language:** `extensions/lang-es/extension.json` (MIT) is embedded into `alst-text::bundled` until the
+  M3 registry (`alst-ext`) replaces it. Only the `regex` engine and the `declarative` keys of SPEC §6.7 are read.
+- **Tokens:** whitespace and punctuation are tokens too (`isWord:false`), so the concatenated token text equals the source.
+  Sentence breaks: a `sentenceEnd` char followed by whitespace/closing quote (minus `exceptions`), or a blank line.
+  Spec example change: `¿¡` removed from `sentenceEnd` (they open sentences).
+- **Term matching (§5.3):** per-language trie over normalized word sequences, longest match first, within a sentence,
+  words separated only by whitespace. Terms are keyed by `text_lc` = normalized words joined by one space.
+- **Reader contract:** Rust returns "units" (a word, a multi-word match, or non-word text) with term id/status; UI re-requests the part after each save.
+- **Store additions:** parts/work import with parts, `save_term` (find-or-create by `(language, text_lc)`, per-column writes,
+  `term.status` event in the same transaction), `set_term_parents` (tombstones), `emit_event`.
+- **Deferred inside M2:** `local_token_cache` (tokenizing a part is cheap), EPUB images → media store (needs the §8 media
+  store, M4), Yomitan `term_meta_bank` (frequency/pitch, M5), structured-content is flattened to plain text, no
+  deinflection (CJK, M5), AnkiConnect exporter, JSON-Schema validation of manifests (M3).
+
+Steps: 1 store + migration 0002 → 2 `alst-text` tokenizer + goldens → 3 matcher + goldens → 4 importers → 5 `alst-dict`
+→ 6 shell commands → 7 UI (library, import, reader, editor, dictionaries, export) → 8 desktop run → 9 Android check.
+
+### M2 status
+
+Done: `alst-text` (tokenizer, matcher, importers, TSV), `alst-dict`, store terms/parents/events, migration 0002,
+`extensions/lang-es`, shell commands, Svelte UI (library, import text/EPUB/URL, reader, term editor with phrase
+selection, dictionaries, Anki export). `cargo test --workspace` passes (goldens in `crates/alst-text/tests/fixtures/es/`;
+regenerate with `UPDATE_GOLDEN=1`).
+
+Verified: Rust tests; the real desktop app launches (`npm run tauri dev`, no runtime errors); UI interaction flow
+(click, extend to phrase, status colors, lookup links, finish part) in a browser against a JS mock of the commands;
+Android debug APK (x86_64) builds.
+
+Not verified: the real desktop window end-to-end (file pickers, EPUB/dictionary upload via raw IPC bodies,
+Save to Downloads, opening links in the system browser), and nothing was run on the Android emulator.
+Known gaps: no `local_token_cache`, no keyboard shortcuts for status, dictionary lookup is exact-match only
+(no lemma/deinflection), Yomitan meta banks ignored, EPUB images skipped. Next: M3.

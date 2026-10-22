@@ -5,7 +5,10 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Migrations in order. Never edit an applied one; add a new numbered file.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_core.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_core.sql")),
+    (2, include_str!("../migrations/0002_reader.sql")),
+];
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
@@ -21,6 +24,7 @@ pub fn open_in_memory() -> Result<Connection> {
 fn init(mut conn: Connection) -> Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.busy_timeout(std::time::Duration::from_secs(10))?;
     migrate(&mut conn)?;
     Ok(conn)
 }
@@ -47,6 +51,7 @@ mod tests {
         for t in [
             "works", "parts", "concepts", "terms", "term_parents", "media", "extension_state",
             "ext_data", "settings", "events", "_changes", "local_settings", "local_peers",
+            "local_dict_dicts", "local_dict_entries",
         ] {
             let n: i64 = conn
                 .query_row("SELECT count(*) FROM sqlite_master WHERE name = ?1", [t], |r| r.get(0))

@@ -1,0 +1,16 @@
+[package]
+name = "alst-text"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+scraper = "0.23"
+ureq = "3"
+encoding_rs = "0.8"

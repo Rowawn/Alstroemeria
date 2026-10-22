@@ -1,0 +1,7 @@
+# key<TAB>id<TAB>status ; keys are text_lc (normalized words joined by one space)
+por favor	t1	3
+a pesar de	t2	1
+a pesar	t3	2
+de repente	t4	5
+lluvia	t5	99
+pedro	t6	4
