@@ -1,0 +1,16 @@
+{
+  "name": "alstroemeria",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MPL-2.0",
+  "workspaces": ["ui"],
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "npm run dev -w ui",
+    "build": "npm run build -w ui",
+    "check": "npm run check -w ui"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

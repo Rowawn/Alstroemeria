@@ -6,7 +6,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | M | Milestone | Model | Done when |
 |---|---|---|---|
 | 0 | **Spec** | Opus | `docs/SPEC.md`, this roadmap, `CLAUDE.md` exist ✅ |
-| 1 | **Skeleton** | Sonnet | See below |
+| 1 | **Skeleton** | Sonnet | See below ✅ |
 | 2 | **Reader MVP** | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
 | 3 | **Extension host** | Opus design, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
