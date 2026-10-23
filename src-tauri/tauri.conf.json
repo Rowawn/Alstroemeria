@@ -18,7 +18,24 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval' alstext: http://alstext.localhost",
+        "connect-src": "ipc: http://ipc.localhost alstext: http://alstext.localhost",
+        "frame-src": "alstext: http://alstext.localhost",
+        "img-src": "'self' data: alstext: http://alstext.localhost",
+        "style-src": "'self' 'unsafe-inline'",
+        "worker-src": "blob:"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval' alstext: http://alstext.localhost 'unsafe-inline'",
+        "connect-src": "ipc: http://ipc.localhost alstext: http://alstext.localhost ws: http://localhost:1420 http://127.0.0.1:1420",
+        "frame-src": "alstext: http://alstext.localhost",
+        "img-src": "'self' data: alstext: http://alstext.localhost",
+        "style-src": "'self' 'unsafe-inline'",
+        "worker-src": "blob:"
+      }
     }
   },
   "bundle": {

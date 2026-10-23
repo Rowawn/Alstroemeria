@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alstroemeria.app/schemas/extension.schema.json",
+  "title": "Alstroemeria extension manifest (extension.json)",
+  "description": "SPEC §6.2 and §6.9. Validated on install by alst-ext; this file is for extension authors and editors.",
+  "type": "object",
+  "required": ["id", "name", "version", "kind", "license", "apiVersion", "runtime"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "description": "Semantic version, e.g. 1.0.0" },
+    "kind": { "enum": ["language", "addon", "module"] },
+    "license": { "type": "string", "minLength": 1, "description": "SPDX license id" },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "apiVersion": { "type": "string", "description": "Semver range of the host API, e.g. ^1.0" },
+    "language": { "type": "string", "description": "kind=language only: the language id" },
+    "targets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "kind=addon|module: language ids, or \"*\" for every language"
+    },
+    "provides": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+    "requires": { "type": "array", "items": { "$ref": "#/$defs/capabilityOrWildcard" } },
+    "optional": { "type": "array", "items": { "$ref": "#/$defs/capabilityOrWildcard" } },
+    "runtime": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["declarative", "js", "wasm", "native"] },
+        "entry": { "type": "string", "description": "Path of the entry module inside the extension folder" }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "items": { "enum": ["windows", "macos", "linux", "android", "ios"] }
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^(terms:read|terms:write|events:read|dict:read|net:(\\*\\.)?[A-Za-z0-9.-]+)$" }
+    },
+    "contributes": {
+      "type": "object",
+      "properties": {
+        "decorators": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "type": "string" }, "priority": { "type": "integer", "default": 50 } }
+          }
+        },
+        "panels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "entry"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "entry": { "type": "string" },
+              "placement": { "enum": ["sidebar"], "default": "sidebar" }
+            }
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "context": { "enum": ["reader", "term", "global"] }
+            }
+          }
+        },
+        "lookupProviders": { "type": "array", "description": "Accepted, ignored until M5" },
+        "importers": { "type": "array", "description": "Accepted, ignored until M4/M8" },
+        "exporters": { "type": "array", "description": "Accepted, ignored until M4/M8" },
+        "activities": { "type": "array", "description": "Accepted, ignored until M9/M11" },
+        "settings": {
+          "type": "object",
+          "description": "JSON Schema object; properties may be boolean, number, string, or string with enum",
+          "properties": {
+            "properties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["type"],
+                "properties": {
+                  "type": { "enum": ["boolean", "number", "string"] },
+                  "title": { "type": "string" },
+                  "description": { "type": "string" },
+                  "default": {},
+                  "enum": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "declarative": { "type": "object", "description": "kind=language with a declarative runtime (SPEC §6.7)" }
+  },
+  "$defs": {
+    "capability": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*\\.[a-z0-9][a-z0-9_.-]*$" },
+    "capabilityOrWildcard": { "type": "string", "pattern": "^(\\*|[a-z0-9][a-z0-9_-]*)\\.[a-z0-9][a-z0-9_.-]*$" }
+  }
+}

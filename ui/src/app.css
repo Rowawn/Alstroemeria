@@ -11,6 +11,25 @@
   --s3: #fff1a8;
   --s4: #e6f4b4;
   --s5: #d6efd2;
+  /* Semantic roles for render hints (SPEC §6.9.6.1); extensions name roles, themes pick colours. */
+  --role-noun: #1d5fa8;
+  --role-verb: #b3261e;
+  --role-adjective: #2e7d32;
+  --role-adverb: #8a5a00;
+  --role-particle: #6a4bb0;
+  --role-function: #666;
+  --role-name: #a0307a;
+  --role-accent-high: #c62828;
+  --role-accent-low: #1565c0;
+  --role-accent-drop: #ef6c00;
+  --role-info: #00796b;
+  --role-warn: #d84315;
+  --role-c1: #1d5fa8;
+  --role-c2: #b3261e;
+  --role-c3: #2e7d32;
+  --role-c4: #8a5a00;
+  --role-c5: #6a4bb0;
+  --role-c6: #a0307a;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -27,6 +46,24 @@
     --s3: #6e6a28;
     --s4: #4c5f2c;
     --s5: #2f5a38;
+    --role-noun: #7db4f0;
+    --role-verb: #ff8a80;
+    --role-adjective: #81c784;
+    --role-adverb: #ffcc66;
+    --role-particle: #b9a1f0;
+    --role-function: #aaa;
+    --role-name: #f48fcf;
+    --role-accent-high: #ff7a70;
+    --role-accent-low: #7ab8ff;
+    --role-accent-drop: #ffb066;
+    --role-info: #4fd1c1;
+    --role-warn: #ff9e80;
+    --role-c1: #7db4f0;
+    --role-c2: #ff8a80;
+    --role-c3: #81c784;
+    --role-c4: #ffcc66;
+    --role-c5: #b9a1f0;
+    --role-c6: #f48fcf;
   }
 }
 * {

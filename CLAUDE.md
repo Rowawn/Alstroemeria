@@ -19,6 +19,7 @@ Targets Windows, macOS, Linux, Android; iOS later. Peer-to-peer LAN sync. Everyt
 - `npm run tauri dev` — desktop dev
 - `npm run tauri android dev` — Android dev
 - `cargo test --workspace` — Rust tests
+- `npm test` — Vitest (UI extension host)
 
 ## Working economically
 - Prefer scaffolding tools (`create-tauri-app`, `cargo new`) over hand-writing boilerplate.

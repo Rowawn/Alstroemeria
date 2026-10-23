@@ -78,6 +78,25 @@ pub struct Unit {
     pub sentence: usize,
     pub start: usize,
     pub end: usize,
+    /// First and last token index (inclusive) covered by this unit, as in `PartView.tokens`.
+    pub token_range: (usize, usize),
+}
+
+/// A token as sent to the UI: the §5.2 token plus the sentence it belongs to.
+#[derive(Debug, Clone, Serialize)]
+pub struct ViewToken {
+    #[serde(flatten)]
+    pub token: Token,
+    pub sentence: usize,
+}
+
+/// Flatten sentences into one token list, indexed by `Token::i`.
+pub fn flatten(sentences: &[Vec<Token>]) -> Vec<ViewToken> {
+    sentences
+        .iter()
+        .enumerate()
+        .flat_map(|(si, sent)| sent.iter().map(move |t| ViewToken { token: t.clone(), sentence: si }))
+        .collect()
 }
 
 fn is_space(t: &Token) -> bool {
@@ -102,6 +121,7 @@ pub fn build_units(sentences: &[Vec<Token>], matcher: &Matcher, terms: &HashMap<
                     sentence: si,
                     start: tok.start,
                     end: tok.end,
+                    token_range: (tok.i, tok.i),
                 });
                 k += 1;
                 continue;
@@ -133,6 +153,7 @@ pub fn build_units(sentences: &[Vec<Token>], matcher: &Matcher, terms: &HashMap<
                 sentence: si,
                 start: tok.start,
                 end: sent[last].end,
+                token_range: (tok.i, sent[last].i),
             });
             k = last + 1;
         }

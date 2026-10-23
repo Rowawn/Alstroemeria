@@ -4,20 +4,31 @@ use alst_core::{NewPart, NewWork, PartInfo, Store, Term, TermPatch, Work};
 use alst_dict::{DictInfo, LookupResult};
 use alst_text::export::{ExportRow, find_examples, to_tsv};
 use alst_text::import::{self, ImportedWork};
-use alst_text::reader::build_units;
+use alst_text::reader::{ViewToken, build_units, flatten};
 use alst_text::{LanguageDef, LookupUrl, Matcher, TermState, Unit};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use tauri::ipc::{InvokeBody, Request};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
-struct AppState {
+mod ext;
+
+pub(crate) struct AppState {
     store: Mutex<Store>,
     db_path: PathBuf,
-    languages: Vec<LanguageDef>,
+    /// App data folder (`ALST_DATA_DIR` overrides it, for tests and the self-test).
+    data_dir: PathBuf,
+    /// Installed and bundled extensions. Lock order: `registry` before `store`.
+    registry: RwLock<alst_ext::Registry>,
+    ext_root: PathBuf,
+    /// Language definitions from enabled language extensions; rebuilt when extensions change.
+    languages: RwLock<Vec<LanguageDef>>,
+    /// SQLite rowid of the last event forwarded to the UI.
+    event_cursor: AtomicI64,
 }
 
 type Res<T> = Result<T, String>;
@@ -31,15 +42,51 @@ impl AppState {
         self.store.lock().map_err(err)
     }
 
-    fn lang(&self, id: &str) -> Res<&LanguageDef> {
-        self.languages.iter().find(|l| l.id == id).ok_or_else(|| format!("language '{id}' is not installed"))
+    fn registry(&self) -> Res<RwLockReadGuard<'_, alst_ext::Registry>> {
+        self.registry.read().map_err(err)
+    }
+
+    fn lang(&self, id: &str) -> Res<LanguageDef> {
+        self.languages
+            .read()
+            .map_err(err)?
+            .iter()
+            .find(|l| l.id == id)
+            .cloned()
+            .ok_or_else(|| format!("language '{id}' is not installed"))
+    }
+
+    /// Send events written since the last call to the UI (`alst:event`), so listeners see core events live.
+    fn forward_events(&self, app: &tauri::AppHandle, store: &Store) {
+        let after = self.event_cursor.load(Ordering::SeqCst);
+        if let Ok(rows) = store.events_after(after, 500) {
+            for (rowid, ev) in rows {
+                let _ = app.emit("alst:event", &ev);
+                self.event_cursor.fetch_max(rowid, Ordering::SeqCst);
+            }
+        }
     }
 }
 
-fn raw_body<'a>(request: &'a Request<'_>) -> Res<&'a [u8]> {
+/// Binary request body. Desktop sends it raw; Android's IPC falls back to JSON for typed arrays, as an
+/// array of numbers or an object keyed by index, so accept those too.
+pub(crate) fn raw_body<'a>(request: &'a Request<'_>) -> Res<std::borrow::Cow<'a, [u8]>> {
+    use std::borrow::Cow;
+    let bad = || "expected a binary body".to_string();
     match request.body() {
-        InvokeBody::Raw(bytes) => Ok(bytes),
-        _ => Err("expected a binary body".into()),
+        InvokeBody::Raw(bytes) => Ok(Cow::Borrowed(bytes)),
+        InvokeBody::Json(serde_json::Value::Array(a)) => {
+            a.iter().map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or_else(bad)).collect::<Res<Vec<u8>>>().map(Cow::Owned)
+        }
+        InvokeBody::Json(serde_json::Value::Object(o)) => {
+            let mut items: Vec<(usize, u8)> = o
+                .iter()
+                .map(|(k, v)| Ok((k.parse::<usize>().map_err(|_| bad())?, v.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or_else(bad)?)))
+                .collect::<Res<_>>()?;
+            items.sort_unstable_by_key(|(i, _)| *i);
+            Ok(Cow::Owned(items.into_iter().map(|(_, b)| b).collect()))
+        }
+        _ => Err(bad()),
     }
 }
 
@@ -80,12 +127,14 @@ struct LanguageInfo {
 }
 
 #[tauri::command]
-fn list_languages(state: State<AppState>) -> Vec<LanguageInfo> {
-    state
+fn list_languages(state: State<AppState>) -> Res<Vec<LanguageInfo>> {
+    Ok(state
         .languages
+        .read()
+        .map_err(err)?
         .iter()
         .map(|l| LanguageInfo { id: l.id.clone(), name: l.name.clone(), rtl: l.rtl, lookup_urls: l.lookup_urls.clone() })
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
@@ -109,7 +158,7 @@ async fn import_epub(state: State<'_, AppState>, request: Request<'_>) -> Res<Wo
     let language = header(&request, "x-language")?;
     let filename = header(&request, "x-filename").unwrap_or_default();
     let fallback = filename.trim_end_matches(".epub").to_string();
-    let work = import::epub::import(raw_body(&request)?, &fallback).map_err(err)?;
+    let work = import::epub::import(&raw_body(&request)?, &fallback).map_err(err)?;
     store_import(&state, &language, work)
 }
 
@@ -133,6 +182,7 @@ struct PartView {
     part_id: String,
     rtl: bool,
     units: Vec<Unit>,
+    tokens: Vec<ViewToken>,
 }
 
 /// Term lookup tables for a language: key → state, plus the multi-word matcher.
@@ -144,8 +194,13 @@ fn term_tables(store: &Store, language: &str) -> Res<(Matcher, HashMap<String, T
 }
 
 fn units_for(store: &Store, lang: &LanguageDef, text: &str) -> Res<Vec<Unit>> {
+    Ok(view_for(store, lang, text)?.0)
+}
+
+fn view_for(store: &Store, lang: &LanguageDef, text: &str) -> Res<(Vec<Unit>, Vec<ViewToken>)> {
     let (matcher, map) = term_tables(store, &lang.id)?;
-    Ok(build_units(&lang.tokenize(text), &matcher, &map))
+    let sentences = lang.tokenize(text);
+    Ok((build_units(&sentences, &matcher, &map), flatten(&sentences)))
 }
 
 #[tauri::command]
@@ -154,8 +209,8 @@ fn get_part_view(state: State<AppState>, part_id: String) -> Res<PartView> {
     let part = store.get_part(&part_id).map_err(err)?;
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
-    let units = units_for(&store, lang, &part.text)?;
-    Ok(PartView { parts: store.list_parts(&work.id).map_err(err)?, work, part_id, rtl: lang.rtl, units })
+    let (units, tokens) = view_for(&store, &lang, &part.text)?;
+    Ok(PartView { parts: store.list_parts(&work.id).map_err(err)?, work, part_id, rtl: lang.rtl, units, tokens })
 }
 
 fn squash(text: &str) -> String {
@@ -175,7 +230,7 @@ struct TermView {
 /// Open the editor for a word or selection: the stored term (if any) and dictionary results.
 /// Logs a `term.lookup` event when `log_lookup` (the first open, not when the selection is adjusted).
 #[tauri::command]
-fn open_term(state: State<AppState>, language: String, text: String, log_lookup: bool) -> Res<TermView> {
+fn open_term(app: tauri::AppHandle, state: State<AppState>, language: String, text: String, log_lookup: bool) -> Res<TermView> {
     let lang = state.lang(&language)?;
     let (key, word_count) = lang.term_key(&text).ok_or("no word in selection")?;
     let mut store = state.store()?;
@@ -184,12 +239,14 @@ fn open_term(state: State<AppState>, language: String, text: String, log_lookup:
     let subject = term.as_ref().map(|t| ("term", t.id.as_str()));
     if log_lookup {
         store.emit_event("term.lookup", Some(&language), subject, &serde_json::json!({ "source": "popup" })).map_err(err)?;
+        state.forward_events(&app, &store);
     }
     Ok(TermView { key, text: squash(&text), word_count, term, dict })
 }
 
 #[tauri::command]
 fn save_term(
+    app: tauri::AppHandle,
     state: State<AppState>,
     language: String,
     text: String,
@@ -210,19 +267,21 @@ fn save_term(
             }
         }
         store.set_term_parents(&term.id, &ids).map_err(err)?;
+        state.forward_events(&app, &store);
         return store.find_term(&language, &key).map_err(err)?.ok_or_else(|| "term vanished".into());
     }
+    state.forward_events(&app, &store);
     Ok(term)
 }
 
 /// Mark a part as read; optionally set its still-unknown words to "well known" (99).
 #[tauri::command]
-fn finish_part(state: State<AppState>, part_id: String, mark_known: bool, duration_ms: i64) -> Res<usize> {
+fn finish_part(app: tauri::AppHandle, state: State<AppState>, part_id: String, mark_known: bool, duration_ms: i64) -> Res<usize> {
     let mut store = state.store()?;
     let part = store.get_part(&part_id).map_err(err)?;
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
-    let units = units_for(&store, lang, &part.text)?;
+    let units = units_for(&store, &lang, &part.text)?;
     let mut seen = HashSet::new();
     let unknown: Vec<(String, String, i64)> = units
         .iter()
@@ -239,7 +298,9 @@ fn finish_part(state: State<AppState>, part_id: String, mark_known: bool, durati
         "duration_ms": duration_ms.max(0),
     });
     store.emit_event("part.read", Some(&work.language), Some(("part", &part_id)), &payload).map_err(err)?;
-    if mark_known { store.create_terms(&work.language, &unknown, 99).map_err(err) } else { Ok(0) }
+    let created = if mark_known { store.create_terms(&work.language, &unknown, 99).map_err(err)? } else { 0 };
+    state.forward_events(&app, &store);
+    Ok(created)
 }
 
 // ---- dictionaries ---------------------------------------------------------------------------
@@ -250,7 +311,7 @@ fn finish_part(state: State<AppState>, part_id: String, mark_known: bool, durati
 async fn import_dictionary(state: State<'_, AppState>, request: Request<'_>) -> Res<DictInfo> {
     let language = header(&request, "x-language")?;
     state.lang(&language)?;
-    let bytes = raw_body(&request)?.to_vec();
+    let bytes = raw_body(&request)?.into_owned();
     let path = state.db_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = alst_core::db::open(&path).map_err(err)?;
@@ -305,7 +366,7 @@ fn export_tsv(state: State<AppState>, language: String, min_status: i64, max_sta
     let terms = store.list_terms(&language, min_status, max_status).map_err(err)?;
     let wanted: HashSet<String> = terms.iter().map(|t| t.text_lc.clone()).collect();
     let texts = store.part_texts(&language).map_err(err)?;
-    let examples = find_examples(lang, texts.iter().map(String::as_str), &wanted);
+    let examples = find_examples(&lang, texts.iter().map(String::as_str), &wanted);
     let rows: Vec<ExportRow> = terms
         .iter()
         .map(|t| ExportRow {
@@ -330,16 +391,87 @@ fn save_export(app: tauri::AppHandle, filename: String, content: String) -> Res<
     Ok(path.display().to_string())
 }
 
+/// The on-device self-test (ui/src/lib/ext/selftest.ts) runs only if a file named `selftest` exists in the
+/// app data folder, so it can be switched on without env vars on Android. The file's text selects what to leave
+/// on screen afterwards (`reader` or `extensions`), for taking screenshots.
+#[tauri::command]
+fn selftest_enabled(state: State<AppState>) -> Option<String> {
+    std::fs::read_to_string(state.data_dir.join("selftest")).ok().map(|s| s.trim().to_string())
+}
+
+#[tauri::command]
+fn selftest_report(state: State<AppState>, name: String, ok: bool, detail: String) {
+    let line = format!("SELFTEST {} {name}: {detail}", if ok { "PASS" } else { "FAIL" });
+    eprintln!("{line}");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state.data_dir.join("selftest.log")) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// A loopback HTTP server that counts connections, so the self-test can prove a sandboxed worker or panel made
+/// none (a failed request alone can't tell "blocked by CSP" from "no network"). Returns its port.
+#[tauri::command]
+fn selftest_canary_start() -> Res<u16> {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    static HITS: std::sync::OnceLock<(u16, std::sync::Arc<std::sync::atomic::AtomicU32>)> = std::sync::OnceLock::new();
+    let (port, _) = HITS.get_or_init(|| {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("canary bind");
+        let port = listener.local_addr().expect("addr").port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = hits.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming().flatten() {
+                counter.fetch_add(1, Ordering::SeqCst as _);
+                let mut conn = conn;
+                let mut buf = [0u8; 512];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
+            }
+        });
+        // Positive control: a connection from here must be counted, then the count is reset.
+        let _ = TcpStream::connect(("127.0.0.1", port));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        hits.store(0, Ordering::SeqCst as _);
+        (port, hits)
+    });
+    CANARY.set(HITS.get().expect("init").1.clone()).ok();
+    Ok(*port)
+}
+
+static CANARY: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicU32>> = std::sync::OnceLock::new();
+
+#[tauri::command]
+fn selftest_canary_hits() -> u32 {
+    CANARY.get().map_or(0, |c| c.load(Ordering::SeqCst as _))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .register_uri_scheme_protocol("alstext", ext::serve)
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let dir = match std::env::var_os("ALST_DATA_DIR") {
+                Some(d) => PathBuf::from(d),
+                None => app.path().app_data_dir()?,
+            };
             let db_path = dir.join("alstroemeria.db");
+            let ext_root = dir.join("extensions");
             let store = Store::open(&db_path)?;
-            let languages = alst_text::bundled::languages()?;
-            app.manage(AppState { store: Mutex::new(store), db_path, languages });
+            let registry = alst_ext::Registry::load(&alst_ext::registry::BUNDLED, Some(&ext_root));
+            let languages = alst_ext::host::language_defs(&registry, &store)?;
+            let event_cursor = AtomicI64::new(store.last_event_rowid()?);
+            app.manage(AppState {
+                store: Mutex::new(store),
+                db_path,
+                data_dir: dir,
+                registry: RwLock::new(registry),
+                ext_root,
+                languages: RwLock::new(languages),
+                event_cursor,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -361,6 +493,21 @@ pub fn run() {
             open_url,
             export_tsv,
             save_export,
+            ext::list_extensions,
+            ext::resolve_extensions,
+            ext::inspect_extension,
+            ext::install_extension,
+            ext::uninstall_extension,
+            ext::set_extension_enabled,
+            ext::set_extension_languages,
+            ext::set_extension_settings,
+            ext::set_provider,
+            ext::set_decorator_order,
+            ext::ext_call,
+            selftest_enabled,
+            selftest_report,
+            selftest_canary_start,
+            selftest_canary_hits,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

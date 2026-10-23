@@ -12,3 +12,7 @@ node_modules
 /src-tauri/gen/android/local.properties
 /src-tauri/gen/android/app/src/main/jniLibs
 /src-tauri/gen/schemas
+/extensions/*/ext.wasm
+/extensions/*/wasm-shim.js
+/extensions/*/panel.js
+/.playwright-mcp

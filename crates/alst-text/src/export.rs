@@ -87,11 +87,10 @@ pub fn to_tsv(language: &str, rows: &[ExportRow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundled;
 
     #[test]
     fn finds_first_sentence_with_bold_term() {
-        let es = bundled::languages().unwrap().remove(0);
+        let es = LanguageDef::from_manifest(include_str!("../../../extensions/lang-es/extension.json")).unwrap();
         let wanted: HashSet<String> = ["taller", "por favor", "ausente"].iter().map(|s| s.to_string()).collect();
         let texts = ["Hola. Voy al Taller <hoy>.", "Dime, por\nfavor, qué pasó. El taller cerró."];
         let found = find_examples(&es, texts, &wanted);

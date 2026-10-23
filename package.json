@@ -3,12 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "license": "MPL-2.0",
-  "workspaces": ["ui"],
+  "workspaces": [
+    "ui"
+  ],
   "scripts": {
-    "tauri": "tauri",
+    "tauri": "npm run build:extensions && tauri",
     "dev": "npm run dev -w ui",
     "build": "npm run build -w ui",
-    "check": "npm run check -w ui"
+    "check": "npm run check -w ui",
+    "test": "npm run test -w ui",
+    "build:extensions": "node scripts/build-extensions.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

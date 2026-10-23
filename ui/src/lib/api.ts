@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ExtInfo, ExtensionList, PackageInfo, ResolvedView, Token, UnitLike } from "./ext/types";
 
 export type LookupUrl = { name: string; url: string };
 export type Language = { id: string; name: string; rtl: boolean; lookupUrls: LookupUrl[] };
@@ -23,8 +24,9 @@ export type Unit = {
   sentence: number;
   start: number;
   end: number;
+  tokenRange: [number, number];
 };
-export type PartView = { work: Work; parts: PartInfo[]; partId: string; rtl: boolean; units: Unit[] };
+export type PartView = { work: Work; parts: PartInfo[]; partId: string; rtl: boolean; units: Unit[]; tokens: Token[] };
 export type TermRef = { id: string; text: string };
 export type Term = {
   id: string;
@@ -85,7 +87,24 @@ export const api = {
   exportTsv: (language: string, minStatus: number, maxStatus: number) =>
     invoke<{ tsv: string; count: number }>("export_tsv", { language, minStatus, maxStatus }),
   saveExport: (filename: string, content: string) => invoke<string>("save_export", { filename, content }),
+
+  // extensions (SPEC §6.9)
+  extensions: () => invoke<ExtensionList>("list_extensions"),
+  resolveExtensions: (language: string) => invoke<ResolvedView>("resolve_extensions", { language }),
+  inspectExtension: async (file: File) => invoke<PackageInfo>("inspect_extension", await bytesOf(file)),
+  installExtension: async (file: File) => invoke<ExtInfo>("install_extension", await bytesOf(file)),
+  uninstallExtension: (id: string) => invoke<void>("uninstall_extension", { id }),
+  setExtensionEnabled: (id: string, enabled: boolean) => invoke<void>("set_extension_enabled", { id, enabled }),
+  setExtensionLanguages: (id: string, languages: string[]) => invoke<void>("set_extension_languages", { id, languages }),
+  setExtensionSettings: (id: string, settings: Record<string, unknown>) =>
+    invoke<void>("set_extension_settings", { id, settings }),
+  setProvider: (language: string, capability: string, extId: string) =>
+    invoke<void>("set_provider", { language, capability, extId }),
+  setDecoratorOrder: (language: string, ids: string[]) => invoke<void>("set_decorator_order", { language, ids }),
+  extCall: (extId: string, method: string, params: unknown) => invoke<unknown>("ext_call", { extId, method, params }),
 };
+
+export type { UnitLike };
 
 /** Fill a lookup URL template (`###` placeholder, SPEC §7). */
 export const lookupHref = (template: string, term: string) => template.replace("###", encodeURIComponent(term));

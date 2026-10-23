@@ -112,3 +112,40 @@ Design: SPEC §6.9 (read §6.9 fully; §6.1–6.8 only for background). Steps, e
    then Android: the reader shows `es-morph-hints` underlines and the density panel opens.
 
 Out of scope: lookupProvider, importer/exporter, activity, native runtime, JS tokenizers, extension sync.
+
+### M3 status
+
+Done: all eight steps. `crates/alst-ext` (manifest + validation, registry of bundled/installed extensions, `.alext`
+install with zip safety checks, capability resolution, permission checker, `net.fetch`, and `host::call`, which routes
+every host-API call with permission checks), `schemas/extension.schema.json`, store methods for `extension_state`,
+`settings`, `ext_data` and event queries, `alst-text::bundled` removed (languages come from the registry),
+`alstext://` protocol, extension commands (plus `inspect_extension`, so the UI can show permissions before installing),
+CSP, UI host (`ui/src/lib/ext/`: worker bootstrap, RPC with timeouts, annotator/decorator pipeline, hint merging),
+Extensions screen, sandboxed panel host, command palette (Ctrl/Cmd+K, plus a button for touch), `sdk/`,
+`extensions/es-morph-hints` (Rust → WASM) and `extensions/addon-density` (JS). `cargo test --workspace` and
+`npm test` (Vitest, 29 tests) pass.
+
+Verified in the real app (macOS WebKit, and the Android API 34 emulator with WebView 113), through the built-in
+self-test (`ui/src/lib/ext/selftest.ts`; create a file `selftest` in the app data folder, or set `ALST_DATA_DIR`, see
+SPEC §6.9.5): bundled extensions resolve and run; the WASM annotator/decorator underline words in the reader; settings
+change the output; the density panel shows stats and history from `part.read` events; installing a zipped copy as
+`.alext` with its permission preview; zip-slip rejected; a deliberately slow extension times out after 2 s and the
+others keep working; disable/enable; a hostile worker and a hostile panel could not reach a loopback canary server,
+could not call Tauri commands, and were refused every permissioned host call. Screenshots on Android show the
+underlines, the density panel and the Extensions screen.
+
+Findings that changed the design (small, written into SPEC §6.9):
+- A worker started from a same-origin script URL does **not** inherit the CSP on WebKit (a `no-cors` fetch got out).
+  Workers are now started from an inlined `blob:` bootstrap with `worker-src blob:`, which inherits it. Verified on both platforms.
+- Android's IPC delivers `Uint8Array` bodies as JSON, so the raw-body commands (M2's EPUB/dictionary import too) failed
+  there with "expected a binary body"; the shell now accepts both forms (slow for big files over JSON: base64 or chunking
+  is a follow-up if large imports are slow on Android).
+- Android rewrites `http://alstext.localhost/…` to `alstext://localhost/…`; the protocol handler accepts both.
+- `$state` proxies can't be posted to workers; the reader sends snapshots.
+
+Not verified: Windows (the `http://alstext.localhost` form was only seen on Android), iOS, the desktop window by
+screenshot (no screen capture here; the same UI code was checked on Android), `tauri dev` with the dev CSP (dev
+allows `ws:` and the Vite origin, so it does not prove the CSP), real large `.alext` installs on Android.
+Known gaps: `local_token_cache` still absent; a worker serves all languages of an extension, with
+`alst.extension.language` following the latest call; panel height is fixed; no keyboard navigation in the Extensions
+screen beyond native controls. Next: M4.

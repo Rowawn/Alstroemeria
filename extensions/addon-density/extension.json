@@ -1,0 +1,18 @@
+{
+  "id": "addon.density",
+  "name": "Unknown-word density",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "A sidebar panel showing how many words in the current part are new to you, and the ten most frequent. Works for every language.",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["*"],
+  "permissions": ["events:read", "terms:read"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "stats", "priority": 0 }],
+    "panels": [{ "id": "density", "title": "Unknown words", "entry": "panel.html", "placement": "sidebar" }],
+    "commands": [{ "id": "copy-unknown", "title": "Copy unknown words", "context": "reader" }]
+  }
+}

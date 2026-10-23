@@ -120,6 +120,44 @@ pub struct TermStateRow {
     pub word_count: i64,
 }
 
+/// Row of `extension_state`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtStateRow {
+    pub id: String,
+    pub enabled: bool,
+    pub settings: serde_json::Value,
+    pub languages: Vec<String>,
+}
+
+/// An event-log entry as handed to the UI and extensions.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRow {
+    pub id: String,
+    /// Unix ms (the physical part of the HLC).
+    pub ts: i64,
+    #[serde(rename = "type")]
+    pub ty: String,
+    pub language: Option<String>,
+    pub subject_type: Option<String>,
+    pub subject_id: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+fn event_row(r: &rusqlite::Row, o: usize) -> rusqlite::Result<EventRow> {
+    let hlc: i64 = r.get(o + 1)?;
+    let payload: String = r.get(o + 6)?;
+    Ok(EventRow {
+        id: r.get(o)?,
+        ts: hlc::physical_ms(hlc as u64) as i64,
+        ty: r.get(o + 2)?,
+        language: r.get(o + 3)?,
+        subject_type: r.get(o + 4)?,
+        subject_id: r.get(o + 5)?,
+        payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+    })
+}
+
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -441,6 +479,240 @@ impl Store {
     ) -> Result<()> {
         let stamp = self.clock.tick(hlc::wall_ms());
         insert_event(&self.conn, &self.site_id, stamp, ty, language, subject, payload)
+    }
+
+    // ---- extensions: state, settings, storage, events ------------------------------------------
+
+    /// Per-extension user choices (SPEC §4.2 `extension_state`).
+    pub fn ext_states(&self) -> Result<Vec<ExtStateRow>> {
+        let mut stmt =
+            self.conn.prepare("SELECT id, enabled, settings, languages FROM extension_state WHERE deleted = 0 ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        })?;
+        rows.map(|r| {
+            let (id, enabled, settings, languages) = r?;
+            Ok(ExtStateRow {
+                id,
+                enabled: enabled != 0,
+                settings: serde_json::from_str(&settings).unwrap_or_else(|_| serde_json::json!({})),
+                languages: serde_json::from_str(&languages).unwrap_or_default(),
+            })
+        })
+        .collect()
+    }
+
+    /// Create the row if missing, then change the given columns that differ.
+    pub fn set_ext_state(
+        &mut self,
+        id: &str,
+        enabled: Option<bool>,
+        settings: Option<&serde_json::Value>,
+        languages: Option<&[String]>,
+    ) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let exists: bool = tx.query_row("SELECT count(*) FROM extension_state WHERE id = ?1", [id], |r| Ok(r.get::<_, i64>(0)? > 0))?;
+        let mut cols: Vec<(&str, Value)> = Vec::new();
+        if let Some(e) = enabled {
+            cols.push(("enabled", i64::from(e).into()));
+        }
+        if let Some(s) = settings {
+            cols.push(("settings", s.to_string().into()));
+        }
+        if let Some(l) = languages {
+            cols.push(("languages", serde_json::to_string(l).unwrap_or_else(|_| "[]".into()).into()));
+        }
+        if exists {
+            let mut cur = tx.query_row("SELECT enabled, settings, languages FROM extension_state WHERE id = ?1", [id], |r| {
+                Ok((Value::Integer(r.get(0)?), Value::Text(r.get(1)?), Value::Text(r.get(2)?)))
+            })?;
+            cols.retain(|(name, v)| match *name {
+                "enabled" => *v != cur.0,
+                "settings" => *v != std::mem::replace(&mut cur.1, Value::Null),
+                _ => *v != std::mem::replace(&mut cur.2, Value::Null),
+            });
+            update_cols(&tx, "extension_state", id, &cols, stamp, &site)?;
+        } else {
+            let mut all: Vec<(&str, Value)> = vec![
+                ("created_at", (hlc::wall_ms() as i64).into()),
+                ("deleted", 0.into()),
+                ("enabled", 1.into()),
+                ("settings", "{}".to_string().into()),
+                ("languages", "[]".to_string().into()),
+            ];
+            for (name, v) in cols {
+                if let Some(slot) = all.iter_mut().find(|(n, _)| *n == name) {
+                    slot.1 = v;
+                }
+            }
+            insert_row(&tx, "extension_state", id, &all, stamp, &site)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Synced user setting (`settings` table; the row id is the key).
+    pub fn get_setting(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let v: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE id = ?1 AND deleted = 0", [key], |r| r.get(0))
+            .ok();
+        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    pub fn set_setting(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let text = value.to_string();
+        let row: Option<(String, i64)> =
+            tx.query_row("SELECT value, deleted FROM settings WHERE id = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        match row {
+            None => insert_row(
+                &tx,
+                "settings",
+                key,
+                &[("created_at", (hlc::wall_ms() as i64).into()), ("deleted", 0.into()), ("value", text.into())],
+                stamp,
+                &site,
+            )?,
+            Some((old, deleted)) => {
+                let mut cols: Vec<(&str, Value)> = Vec::new();
+                if old != text {
+                    cols.push(("value", text.into()));
+                }
+                if deleted != 0 {
+                    cols.push(("deleted", 0.into()));
+                }
+                update_cols(&tx, "settings", key, &cols, stamp, &site)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Per-extension key/value store (`ext_data`).
+    pub fn ext_data_get(&self, ext: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let v: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM ext_data WHERE extension_id = ?1 AND key = ?2 AND deleted = 0", params![ext, key], |r| r.get(0))
+            .ok();
+        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    pub fn ext_data_keys(&self, ext: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT key FROM ext_data WHERE extension_id = ?1 AND deleted = 0 ORDER BY key")?;
+        Ok(stmt.query_map([ext], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn ext_data_set(&mut self, ext: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let text = value.to_string();
+        let row: Option<(String, String, i64)> = tx
+            .query_row("SELECT id, value, deleted FROM ext_data WHERE extension_id = ?1 AND key = ?2", params![ext, key], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .ok();
+        match row {
+            None => insert_row(
+                &tx,
+                "ext_data",
+                &new_id(),
+                &[
+                    ("created_at", (hlc::wall_ms() as i64).into()),
+                    ("deleted", 0.into()),
+                    ("extension_id", ext.to_string().into()),
+                    ("key", key.to_string().into()),
+                    ("value", text.into()),
+                ],
+                stamp,
+                &site,
+            )?,
+            Some((id, old, deleted)) => {
+                let mut cols: Vec<(&str, Value)> = Vec::new();
+                if old != text {
+                    cols.push(("value", text.into()));
+                }
+                if deleted != 0 {
+                    cols.push(("deleted", 0.into()));
+                }
+                update_cols(&tx, "ext_data", &id, &cols, stamp, &site)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Tombstone a key. Returns whether it existed.
+    pub fn ext_data_delete(&mut self, ext: &str, key: &str) -> Result<bool> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let id: Option<String> = tx
+            .query_row("SELECT id FROM ext_data WHERE extension_id = ?1 AND key = ?2 AND deleted = 0", params![ext, key], |r| r.get(0))
+            .ok();
+        if let Some(id) = &id {
+            update_cols(&tx, "ext_data", id, &[("deleted", 1.into())], stamp, &site)?;
+        }
+        tx.commit()?;
+        Ok(id.is_some())
+    }
+
+    /// One term by id, with parents.
+    pub fn get_term(&self, id: &str) -> Result<Term> {
+        self.term_by_id(id)
+    }
+
+    /// Live terms of a language whose text, lemma-free form or translation contains `query`.
+    pub fn search_terms(&self, language: &str, query: &str, status: Option<i64>, limit: usize) -> Result<Vec<Term>> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM terms WHERE language = ?1 AND deleted = 0
+                   AND (?2 = '' OR instr(text_lc, lower(?2)) > 0 OR instr(lower(coalesce(translation, '')), lower(?2)) > 0)
+                   AND (?3 IS NULL OR status = ?3)
+                 ORDER BY created_at, id LIMIT ?4",
+            )?;
+            stmt.query_map(params![language, query, status, limit as i64], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+        };
+        ids.iter().map(|id| self.term_by_id(id)).collect()
+    }
+
+    /// Events inserted after SQLite rowid `after` (for forwarding to the UI), oldest first.
+    pub fn events_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, EventRow)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rowid, id, hlc, type, language, subject_type, subject_id, payload FROM events
+             WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![after, limit as i64], |r| Ok((r.get::<_, i64>(0)?, event_row(r, 1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Highest event rowid (0 if none).
+    pub fn last_event_rowid(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| r.get(0))?)
+    }
+
+    /// Newest-first query. `ty` matches exactly, or as a prefix when it ends in `*`.
+    pub fn events_query(&self, ty: Option<&str>, since_ms: Option<i64>, limit: usize) -> Result<Vec<EventRow>> {
+        let (exact, prefix) = match ty {
+            Some(t) if t.ends_with('*') => (None, Some(t.trim_end_matches('*').to_string())),
+            Some(t) => (Some(t.to_string()), None),
+            None => (None, None),
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, hlc, type, language, subject_type, subject_id, payload FROM events
+             WHERE (?1 IS NULL OR type = ?1)
+               AND (?2 IS NULL OR substr(type, 1, length(?2)) = ?2)
+               AND (?3 IS NULL OR hlc >= ?3)
+             ORDER BY hlc DESC, id DESC LIMIT ?4",
+        )?;
+        let since_hlc = since_ms.map(|ms| hlc::pack(ms.max(0) as u64, 0) as i64);
+        let rows = stmt.query_map(params![exact, prefix, since_hlc, limit as i64], |r| event_row(r, 0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Connection for device-local `local_*` tables (dictionaries). Never use it for synced tables.
@@ -817,5 +1089,81 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         s.emit_event("part.read", Some("es"), Some(("part", "p1")), &serde_json::json!({"words_read": 10})).unwrap();
         assert_eq!(event_count(&s, "part.read"), 1);
+    }
+    #[test]
+    fn ext_state_creates_then_changes_only_differing_columns() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.set_ext_state("addon.x", Some(false), None, None).unwrap();
+        let st = &s.ext_states().unwrap()[0];
+        assert_eq!((st.id.as_str(), st.enabled, st.languages.len()), ("addon.x", false, 0));
+        let clock = |s: &Store, col: &str| -> i64 {
+            s.conn().query_row("SELECT hlc FROM _changes WHERE tbl='extension_state' AND col=?1", [col], |r| r.get(0)).unwrap()
+        };
+        let enabled_clock = clock(&s, "enabled");
+        s.set_ext_state("addon.x", Some(false), Some(&serde_json::json!({"a": 1})), Some(&["es".to_string()])).unwrap();
+        let st = &s.ext_states().unwrap()[0];
+        assert_eq!((st.settings.clone(), st.languages.clone()), (serde_json::json!({"a": 1}), vec!["es".to_string()]));
+        assert_eq!(clock(&s, "enabled"), enabled_clock, "unchanged column keeps its clock");
+        s.set_ext_state("addon.x", Some(true), None, None).unwrap();
+        assert!(s.ext_states().unwrap()[0].enabled);
+        assert_eq!(s.ext_states().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn settings_and_ext_data_roundtrip_with_tombstones() {
+        let mut s = Store::open_in_memory().unwrap();
+        assert_eq!(s.get_setting("ext.providers.es").unwrap(), None);
+        s.set_setting("ext.providers.es", &serde_json::json!({"es.pos": "a"})).unwrap();
+        s.set_setting("ext.providers.es", &serde_json::json!({"es.pos": "b"})).unwrap();
+        assert_eq!(s.get_setting("ext.providers.es").unwrap(), Some(serde_json::json!({"es.pos": "b"})));
+
+        s.ext_data_set("e1", "k", &serde_json::json!([1, 2])).unwrap();
+        s.ext_data_set("e2", "k", &serde_json::json!("other")).unwrap();
+        assert_eq!(s.ext_data_get("e1", "k").unwrap(), Some(serde_json::json!([1, 2])));
+        assert_eq!(s.ext_data_keys("e1").unwrap(), vec!["k"]);
+        assert!(s.ext_data_delete("e1", "k").unwrap());
+        assert!(!s.ext_data_delete("e1", "k").unwrap());
+        assert_eq!(s.ext_data_get("e1", "k").unwrap(), None);
+        assert_eq!(s.ext_data_get("e2", "k").unwrap(), Some(serde_json::json!("other")), "namespaced per extension");
+        s.ext_data_set("e1", "k", &serde_json::json!(3)).unwrap();
+        assert_eq!(s.ext_data_get("e1", "k").unwrap(), Some(serde_json::json!(3)), "revived");
+        let rows: i64 = s.conn().query_row("SELECT count(*) FROM ext_data WHERE extension_id='e1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn event_queries_and_forwarding_cursor() {
+        let mut s = Store::open_in_memory().unwrap();
+        let cursor = s.last_event_rowid().unwrap();
+        s.emit_event("part.read", Some("es"), Some(("part", "p1")), &serde_json::json!({"unknown_count": 3})).unwrap();
+        s.emit_event("addon.x/seen", None, None, &serde_json::json!({})).unwrap();
+        s.emit_event("part.read", Some("es"), None, &serde_json::json!({"unknown_count": 5})).unwrap();
+        let fresh = s.events_after(cursor, 100).unwrap();
+        assert_eq!(fresh.len(), 3);
+        assert_eq!(s.events_after(fresh[2].0, 100).unwrap().len(), 0);
+        let reads = s.events_query(Some("part.read"), None, 10).unwrap();
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].payload["unknown_count"], 5, "newest first");
+        assert_eq!(s.events_query(Some("addon.x/*"), None, 10).unwrap().len(), 1);
+        assert_eq!(s.events_query(None, None, 2).unwrap().len(), 2);
+        assert_eq!(s.events_query(None, Some(i64::MAX / 100000), 10).unwrap().len(), 0);
+        assert!(fresh[0].1.ts > 1_600_000_000_000);
+    }
+
+    #[test]
+    fn term_search_by_text_translation_and_status() {
+        let mut s = Store::open_in_memory().unwrap();
+        let p = |status, tr: &str| TermPatch { status: Some(status), translation: Some(tr.into()), ..Default::default() };
+        s.save_term("es", "gato", "gato", 1, &p(1, "cat")).unwrap();
+        s.save_term("es", "gatito", "gatito", 1, &p(2, "kitten")).unwrap();
+        s.save_term("es", "perro", "perro", 1, &p(1, "dog")).unwrap();
+        s.save_term("fr", "chat", "chat", 1, &p(1, "cat")).unwrap();
+        let q = |q: &str, st| s.search_terms("es", q, st, 50).unwrap().into_iter().map(|t| t.text_lc).collect::<Vec<_>>();
+        assert_eq!(q("gat", None), vec!["gato", "gatito"]);
+        assert_eq!(q("cat", None), vec!["gato"]);
+        assert_eq!(q("", Some(1)), vec!["gato", "perro"]);
+        assert_eq!(q("gat", Some(2)), vec!["gatito"]);
+        let id = s.find_term("es", "gato").unwrap().unwrap().id;
+        assert_eq!(s.get_term(&id).unwrap().translation.as_deref(), Some("cat"));
     }
 }

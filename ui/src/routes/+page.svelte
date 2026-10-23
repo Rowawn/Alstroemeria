@@ -1,22 +1,41 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { api, type Language } from "$lib/api";
+  import CommandPalette from "$lib/CommandPalette.svelte";
   import Dictionaries from "$lib/Dictionaries.svelte";
+  import { extHost } from "$lib/ext";
+  import type { CoreEvent } from "$lib/ext/types";
   import Export from "$lib/Export.svelte";
+  import Extensions from "$lib/Extensions.svelte";
   import Library from "$lib/Library.svelte";
   import Reader from "$lib/Reader.svelte";
+  import Toasts from "$lib/Toasts.svelte";
 
   let languages = $state<Language[] | null>(null);
-  let tab = $state<"library" | "dictionaries" | "export">("library");
+  let tab = $state<"library" | "dictionaries" | "export" | "extensions">("library");
   let partId = $state<string | null>(null);
   let error = $state("");
 
-  onMount(async () => {
-    try {
-      languages = await api.languages();
-    } catch (e) {
-      error = String(e);
-    }
+  onMount(() => {
+    // Core and extension events reach running extensions that may see them (SPEC §6.9.4).
+    const unlisten = listen<CoreEvent>("alst:event", (e) => extHost.deliverEvent(e.payload));
+    api
+      .languages()
+      .then(async (l) => {
+        languages = l;
+        // Developer-only: on-device verification of the extension host (see selftest.ts).
+        const selftest = await invoke<string | null>("selftest_enabled").catch(() => null);
+        if (selftest !== null) {
+          (await import("$lib/ext/selftest")).run(l, selftest, {
+            openPart: (id) => (partId = id),
+            showExtensions: () => (tab = "extensions"),
+          });
+        }
+      })
+      .catch((e) => (error = String(e)));
+    return () => void unlisten.then((fn) => fn());
   });
 </script>
 
@@ -33,17 +52,23 @@
         <button class:primary={tab === "library"} onclick={() => (tab = "library")}>Library</button>
         <button class:primary={tab === "dictionaries"} onclick={() => (tab = "dictionaries")}>Dictionaries</button>
         <button class:primary={tab === "export"} onclick={() => (tab = "export")}>Export</button>
+        <button class:primary={tab === "extensions"} onclick={() => (tab = "extensions")}>Extensions</button>
       </nav>
       {#if tab === "library"}
         <Library {languages} onOpen={(id) => (partId = id)} />
       {:else if tab === "dictionaries"}
         <Dictionaries {languages} />
+      {:else if tab === "extensions"}
+        <Extensions {languages} />
       {:else}
         <Export {languages} />
       {/if}
     {/if}
   {/if}
 </main>
+
+<Toasts />
+{#if languages}<CommandPalette {languages} />{/if}
 
 <style>
   main {

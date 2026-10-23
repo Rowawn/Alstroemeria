@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Unknown words</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 8px; background: var(--panel, #fff); color: var(--fg, #222); }
+  .bar { height: 10px; background: var(--border, #ddd); border-radius: 5px; overflow: hidden; margin: 6px 0; }
+  .bar > div { height: 100%; background: var(--accent, #3b6fd4); }
+  h4 { margin: 12px 0 4px; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  li button { all: unset; cursor: pointer; color: var(--accent, #3b6fd4); text-decoration: underline; }
+  .muted { color: var(--muted, #777); font-size: 12px; }
+  .n { margin-left: auto; font-variant-numeric: tabular-nums; }
+</style>
+<div id="app" class="muted">Loading…</div>
+<script type="module">
+  import { alst } from "./panel.js";
+
+  const app = document.getElementById("app");
+  const el = (tag, props = {}, ...kids) => {
+    const e = Object.assign(document.createElement(tag), props);
+    e.append(...kids);
+    return e;
+  };
+
+  async function render() {
+    const s = await alst.send({ type: "stats" });
+    if (!s || !s.language) {
+      app.replaceChildren(el("p", { className: "muted" }, "Open a text to see its unknown words."));
+      return;
+    }
+    // terms:read is relayed to the host under this extension's permissions: show saved translations.
+    let translations = new Map();
+    try {
+      const terms = await alst.call("terms.get", { language: s.language, texts: s.top.map((w) => w.key) });
+      translations = new Map(terms.filter((t) => t.translation).map((t) => [t.textLc, t.translation]));
+    } catch {}
+    const pct = s.total ? Math.round((100 * s.unknown) / s.total) : 0;
+    const list = el("ul");
+    for (const w of s.top) {
+      const b = el("button", { title: "Open in the term editor" }, w.key);
+      b.onclick = () => alst.ui.openTerm(s.language, w.key);
+      list.append(el("li", {}, b, el("span", { className: "muted" }, translations.get(w.key) ?? ""), el("span", { className: "n" }, `×${w.count}`)));
+    }
+    const hist = el("ul");
+    for (const h of s.history.slice().reverse()) {
+      const p = h.words ? Math.round((100 * h.unknown) / h.words) : 0;
+      hist.append(el("li", {}, el("span", { className: "muted" }, new Date(h.ts).toLocaleDateString()), el("span", { className: "n" }, `${h.unknown} new (${p}%)`)));
+    }
+    app.replaceChildren(
+      el("div", {}, el("strong", {}, `${pct}% unknown`), el("span", { className: "muted" }, ` — ${s.unknown} of ${s.total} words`)),
+      el("div", { className: "bar" }, Object.assign(el("div"), { style: `width:${pct}%` })),
+      el("h4", {}, "Most frequent unknown"),
+      s.top.length ? list : el("p", { className: "muted" }, "None. Nice."),
+      ...(s.history.length ? [el("h4", {}, "Recent parts you finished"), hist] : []),
+    );
+  }
+
+  alst.on("refresh", render);
+  render();
+</script>

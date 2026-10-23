@@ -331,20 +331,24 @@ now; the host ignores them with a logged notice.
 - An extension is a folder: `extension.json` plus any files (JS, WASM, HTML, data, `LICENSE`).
   `.alext` = zip of that folder's contents (manifest at the zip root).
 - Manifest additions to §6.2: `"license"` (SPDX id, required), `"description"`, `"author"`,
-  `"main"` is replaced by `runtime.entry` (path relative to the folder).
+  `"main"` is replaced by `runtime.entry` (path relative to the folder). `targets` is required for
+  add-ons and modules (explicit `"*"` for universal ones). Unknown permissions, unsafe paths and unknown
+  settings-schema types are validation errors; unknown *fields* are ignored (forward compatibility).
 - **Bundled** first-party extensions: `extensions/*` compiled into the app with `include_dir`
   (read-only; can be disabled, not uninstalled; a newer installed version overrides).
 - **Installed** extensions: `<app-data>/extensions/<id>/` (one version per id).
 - Install (`alst-ext::install`): read zip in memory → validate manifest → reject entries with
-  absolute paths, `..`, symlinks, or total size > 50 MB → show permission prompt in UI →
-  extract to a temp dir → atomic rename. Uninstall deletes the folder; `extension_state`
+  absolute paths, `..`, backslashes, symlinks, or total size > 50 MB (checked against the declared sizes and
+  again while reading) → show permission prompt in UI → extract to a temp dir → atomic rename. The UI calls
+  `inspect_extension` (validates and returns the manifest summary, writes nothing) before `install_extension`. Uninstall deletes the folder; `extension_state`
   keeps the row with `enabled = 0` so settings survive a reinstall.
 - Extension *files* do not sync in M6; `extension_state` does. A device that lacks an enabled
   extension shows it as "missing on this device" (M6 may sync `.alext` as media later).
 - Files are served to the webview by a custom protocol `alstext://<id>/<path>`
   (`http://alstext.localhost/<id>/<path>` on Windows/Android), registered in `src-tauri`,
   reading through `alst-ext`. Responses carry `Access-Control-Allow-Origin: *` and correct MIME
-  types (`application/wasm` for `.wasm`).
+  types (`application/wasm` for `.wasm`). HTML files (panels) also carry their own CSP header
+  (`default-src 'none'`, scripts/styles/images only from `alstext:`, `connect-src 'none'`, `form-action 'none'`).
 
 #### 6.9.3 Registry and capability resolution (`crates/alst-ext`, pure Rust)
 Input: all manifests (bundled + installed), `extension_state` rows, provider choices
@@ -365,6 +369,12 @@ Rules, in order:
    (reason "dependency cycle: a → b → a"). Ties break by id, so order is deterministic.
 6. Decorator order: user order (setting `ext.decoratorOrder.<lang>`), then `priority` desc, then id.
 7. `fingerprint` = hash of (active ids, versions, settings). Used later by `local_token_cache`.
+
+Clarifications: *Optional* capabilities order the graph when they can (an optional edge that would close a cycle is
+ignored). A language extension runs first in `active`. The `native` runtime is disabled with a reason until M11.
+`Resolved` also lists `providerChoices` (capabilities with several providers and the chosen one) for the picker.
+Extensions that don't apply to the language, are disabled by the user, or are turned off for that language are
+simply absent; only platform/API/provider/requirement/cycle problems appear in `disabled`.
 
 Host capabilities in M3: `core.tokenize`, `core.dict`, `core.terms`, `core.events`, `core.storage`,
 `core.net`, `core.ui`. Language extensions also implicitly provide `<lang>.tokenize`,
@@ -389,24 +399,33 @@ Limits: `storage` value ≤ 64 KB, ≤ 1,000 keys per extension; `net.fetch` ≤
 #### 6.9.5 Runtime: workers and the RPC protocol
 - One **Web Worker per active extension**, created lazily when a reader for one of its
   languages opens, kept alive while the app runs, terminated on disable/uninstall.
-- Workers start from a same-origin bootstrap (`ui/src/lib/ext/worker-bootstrap.ts`) that
+- Workers start from a bootstrap (`ui/src/lib/ext/worker-bootstrap.ts`) that
   installs the `alst` API object, then `import()`s the extension's `runtime.entry` from
-  `alstext://`. `wasm` extensions ship a JS entry that instantiates their `.wasm` (see §6.9.8).
+  `alstext://`. The bootstrap is bundled inline and started from a `blob:` URL: a worker started from a
+  same-origin script URL takes its CSP from that script's response, which for app assets has none, and
+  (verified on macOS WebKit) could then reach the network with `fetch(url, {mode: "no-cors"})`; a blob
+  worker inherits the page's CSP. `wasm` extensions ship a JS entry that instantiates their `.wasm` (see §6.9.8).
 - Messages are JSON-RPC-like: `{ id, method, params }` → `{ id, result }` | `{ id, error: { code, message } }`.
   Host→extension methods: `activate`, `annotate`, `decorate`, `command`, `event`,
-  `settingsChanged`, `panelMessage`. Extension→host: the `alst.*` calls in §6.9.7.
+  `settingsChanged`, `panelMessage`. A worker serves one extension for all languages; each hook input carries
+  `language` and `alst.extension.language` follows the latest call. Core events reach the UI as the Tauri event
+  `alst:event` and are forwarded to running workers allowed to see them. Extension→host: the `alst.*` calls in §6.9.7.
 - **Timeouts:** `activate` 5 s; `annotate`/`decorate` 2 s per part; `command` 30 s.
   A timeout or thrown error marks the extension *errored* for this run: the reader renders
   without it, a toast names it, and the Extensions screen shows the error. The worker is terminated.
 - **CSP** (set in `tauri.conf.json`, replacing `null`): `default-src 'self'`;
-  `script-src 'self' 'wasm-unsafe-eval' alstext: http://alstext.localhost`;
+  `script-src 'self' 'wasm-unsafe-eval' alstext: http://alstext.localhost`; `worker-src blob:`;
   `connect-src ipc: http://ipc.localhost alstext: http://alstext.localhost`;
   `frame-src alstext: http://alstext.localhost`; `img-src 'self' data: alstext: http://alstext.localhost`;
   `style-src 'self' 'unsafe-inline'`. Workers inherit it, so extensions cannot reach the
   network except via `alst.net.fetch`.
-- **Must verify in M3:** a worker cannot call Tauri commands directly (no invoke key in the
-  worker; a direct `fetch` to the IPC endpoint is rejected). If that can't be guaranteed,
-  commands that accept an extension id must refuse calls not originating from the main window.
+- **Verified in M3** (`ui/src/lib/ext/selftest.ts`, run inside the real webview): a worker cannot call
+  Tauri commands directly. It has no `__TAURI_INTERNALS__`/invoke key; the IPC endpoint is reachable by
+  `fetch` (it is in `connect-src`) but Tauri answers a request without the per-launch invoke key with an
+  error and silently drops one with a wrong key, so no command runs. The key only exists in the main
+  window; sandboxed panel iframes don't have it either. The same self-test shows that workers and panels
+  cannot reach a loopback canary server over `fetch`, `no-cors` fetch, XHR, WebSocket, `import()`, images
+  or form posts. Set `ALST_DATA_DIR` to a scratch folder and create a file named `selftest` in it to run it.
 - The sandbox is defence in depth, not a guarantee: extensions are installed deliberately by
   the user, and the install prompt says what they can access.
 
@@ -475,11 +494,18 @@ export function onSettingsChanged?(settings: object): void;
 export function onPanelMessage?(panelId: string, msg: unknown): unknown;
 ```
 
+**Decorators:** the `decorate` hook is only called for extensions with a `contributes.decorators` entry (it may
+return no hints, and then serves as a "the reader's statuses changed" hook; `addon.density` does this).
+
 **Panels:** `contributes.panels: [{ id, title, entry: "panel.html", placement: "sidebar" }]`.
 Rendered in `<iframe sandbox="allow-scripts">` from `alstext://`. The panel uses
 `sdk/panel.js` (MIT) to `postMessage` to the host, which relays to the extension's worker
-(`onPanelMessage`) or to permitted `alst.*` calls. On load the host sends
-`{ theme: { cssVariables } }` so panels match light/dark mode.
+(`onPanelMessage`) or to permitted `alst.*` calls. On load the panel
+posts `{type:"alst-ready"}` and the host answers `{type:"alst-theme", cssVariables}` so panels match light/dark
+mode. Panel→host calls are `{type:"alst-call", id, method, params}` (`panel.message` goes to `onPanelMessage`,
+anything else is a permitted `alst.*` call tagged with the panel's extension) answered by `{type:"alst-result", id,
+result|error}`; the host also sends `{type:"alst-event", name:"refresh"}` when the reader's data changed. The host
+identifies the iframe by `event.source` (its origin is opaque).
 
 **Commands:** `contributes.commands: [{ id, title, context?: "reader"|"term"|"global" }]`;
 shown in a command palette (Ctrl/Cmd+K) and, for `term`, in the term editor's menu.
@@ -494,7 +520,9 @@ To avoid toolchain dependencies (no `wasm-bindgen`), WASM modules use a tiny JSO
 - Exports: `memory`, `alst_alloc(len: u32) -> u32`, `alst_free(ptr: u32, len: u32)`, and for each
   hook `alst_<hook>(ptr: u32, len: u32) -> u64` where the input is UTF-8 JSON and the return
   packs `(out_ptr << 32) | out_len` of a UTF-8 JSON result the host frees.
-- Hooks available: `annotate`, `decorate`, `command` (same JSON shapes as §6.9.7).
+- Hooks available: `annotate`, `decorate`, `command` (same JSON shapes as §6.9.7; `command` input is `{id, args}`).
+  A packed result of `0` means "nothing". The host frees the input and the result with `alst_free`. There are no
+  imports, so a module needs no JS glue beyond the shim; a trap (panic) marks the extension errored.
 - Host API calls from WASM are not available in ABI v1; the JS shim can call `alst.*` and pass results in.
 - `sdk/wasm-shim.js` (MIT) implements the JS side generically. It is vendored into the
   extension folder (the build script copies it for first-party extensions), and the entry is:

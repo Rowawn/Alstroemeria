@@ -4,7 +4,7 @@ pub mod db;
 pub mod hlc;
 pub mod store;
 
-pub use store::{NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
+pub use store::{EventRow, ExtStateRow, NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

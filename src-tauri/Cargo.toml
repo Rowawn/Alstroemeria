@@ -22,6 +22,7 @@ tauri = { version = "2", features = [] }
 alst-core = { path = "../crates/alst-core" }
 alst-text = { path = "../crates/alst-text" }
 alst-dict = { path = "../crates/alst-dict" }
+alst-ext = { path = "../crates/alst-ext" }
 tauri-plugin-opener = "2"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }

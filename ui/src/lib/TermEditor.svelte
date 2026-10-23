@@ -1,10 +1,13 @@
 <script lang="ts">
   import { api, lookupHref, STATUSES, statusLabel, type Language, type TermView } from "./api";
 
-  let { language, text, sentence, onSaved, onClose, onExtend }: {
+  let { language, text, sentence, commands, onCommand, onSaved, onClose, onExtend }: {
     language: Language;
     text: string;
     sentence: string;
+    /** `term`-context commands contributed by extensions (SPEC §6.9.7). */
+    commands: { id: string; title: string; ext: { id: string; name: string } }[];
+    onCommand: (c: { id: string; title: string; ext: any }) => void;
     onSaved: () => void;
     onClose: () => void;
     onExtend: (side: "left" | "right") => void;
@@ -110,6 +113,14 @@
   <button class="primary" onclick={() => save()}>Save</button>
 </div>
 {#if error}<p class="error">{error}</p>{/if}
+
+{#if commands.length}
+  <div class="row links">
+    {#each commands as c (c.ext.id + c.id)}
+      <button onclick={() => onCommand(c)} title={c.ext.name}>{c.title}</button>
+    {/each}
+  </div>
+{/if}
 
 {#if language.lookupUrls.length}
   <div class="row links">

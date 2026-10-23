@@ -1,0 +1,26 @@
+{
+  "id": "es.morph-hints",
+  "name": "Spanish morphology hints",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "Heuristically underlines infinitives, gerunds, participles and -mente adverbs. Written in Rust, compiled to WebAssembly.",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["es"],
+  "provides": ["es.morph"],
+  "requires": ["es.tokenize"],
+  "runtime": { "type": "wasm", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "morph", "priority": 50 }],
+    "settings": {
+      "type": "object",
+      "properties": {
+        "infinitives": { "type": "boolean", "title": "Infinitives (-ar, -er, -ir)", "default": true },
+        "gerunds": { "type": "boolean", "title": "Gerunds (-ando, -iendo)", "default": true },
+        "participles": { "type": "boolean", "title": "Participles (-ado, -ido)", "default": true },
+        "adverbs": { "type": "boolean", "title": "Adverbs in -mente", "default": true }
+      }
+    }
+  }
+}
