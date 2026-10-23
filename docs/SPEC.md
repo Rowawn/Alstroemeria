@@ -314,6 +314,207 @@ A CJK language selects a core engine: `"tokenizer": { "engine": "lindera", "dict
 v1: install from a local `.alext` file (a zip of the extension folder), plus first-party extensions
 bundled with the app. A registry/catalogue is out of scope until later.
 
+### 6.9 Extension host design (M3)
+
+This section makes §6.1–6.8 concrete. Where they disagree, this section wins.
+
+#### 6.9.1 Scope of M3
+Implemented in M3: manifest loading and validation, registry, capability resolution, install/
+uninstall of `.alext`, permissions, the worker runtime (`js` and `wasm`), and these extension
+points: **annotator, decorator, panel, command, eventListener**, plus settings and storage.
+Deferred to the milestone that first needs them: `tokenizer`/`normalizer` in JS (M5, if ever;
+core engines cover planned languages), `lookupProvider` (M5), `importer`/`exporter` (M4/M8),
+`activity` (M9/M11), `native` runtime (M11). The manifest schema accepts their declarations
+now; the host ignores them with a logged notice.
+
+#### 6.9.2 Packages, install and loading
+- An extension is a folder: `extension.json` plus any files (JS, WASM, HTML, data, `LICENSE`).
+  `.alext` = zip of that folder's contents (manifest at the zip root).
+- Manifest additions to §6.2: `"license"` (SPDX id, required), `"description"`, `"author"`,
+  `"main"` is replaced by `runtime.entry` (path relative to the folder).
+- **Bundled** first-party extensions: `extensions/*` compiled into the app with `include_dir`
+  (read-only; can be disabled, not uninstalled; a newer installed version overrides).
+- **Installed** extensions: `<app-data>/extensions/<id>/` (one version per id).
+- Install (`alst-ext::install`): read zip in memory → validate manifest → reject entries with
+  absolute paths, `..`, symlinks, or total size > 50 MB → show permission prompt in UI →
+  extract to a temp dir → atomic rename. Uninstall deletes the folder; `extension_state`
+  keeps the row with `enabled = 0` so settings survive a reinstall.
+- Extension *files* do not sync in M6; `extension_state` does. A device that lacks an enabled
+  extension shows it as "missing on this device" (M6 may sync `.alext` as media later).
+- Files are served to the webview by a custom protocol `alstext://<id>/<path>`
+  (`http://alstext.localhost/<id>/<path>` on Windows/Android), registered in `src-tauri`,
+  reading through `alst-ext`. Responses carry `Access-Control-Allow-Origin: *` and correct MIME
+  types (`application/wasm` for `.wasm`).
+
+#### 6.9.3 Registry and capability resolution (`crates/alst-ext`, pure Rust)
+Input: all manifests (bundled + installed), `extension_state` rows, provider choices
+(setting `ext.providers.<lang>` = `{ capability: extensionId }`), the host's
+`core.*` capability list, and the host API version.
+Output, per language: `Resolved { active: [ext ids in run order], annotatorOrder,
+decoratorOrder, disabled: [{ id, reason }], fingerprint }`.
+
+Rules, in order:
+1. Drop extensions that are disabled, not enabled for this language (`targets`/`languages`),
+   not for this platform, or whose `apiVersion` range excludes the host's version.
+2. Expand wildcards: `*.x` → `<lang>.x`.
+3. For each capability with several providers, keep the user's choice, else the bundled one,
+   else the first by id; the others are disabled with reason "another provider is selected".
+4. Repeatedly drop extensions with an unmet `requires` (reason names the missing capability)
+   until stable. `optional` never disables.
+5. Order annotators topologically by provides→requires; a cycle disables every member
+   (reason "dependency cycle: a → b → a"). Ties break by id, so order is deterministic.
+6. Decorator order: user order (setting `ext.decoratorOrder.<lang>`), then `priority` desc, then id.
+7. `fingerprint` = hash of (active ids, versions, settings). Used later by `local_token_cache`.
+
+Host capabilities in M3: `core.tokenize`, `core.dict`, `core.terms`, `core.events`, `core.storage`,
+`core.net`, `core.ui`. Language extensions also implicitly provide `<lang>.tokenize`,
+`<lang>.norm` and (if the engine supplies it) `<lang>.lemma`.
+
+#### 6.9.4 Permissions
+Declared in the manifest; shown at install/enable; enforced in Rust on every host call
+(the UI host tags each call with the worker's extension id; extensions cannot set it).
+
+| Permission | Grants |
+|---|---|
+| *(always)* | own settings, own `storage`, own events (`<id>/*`), `ui.toast`, the data passed to its hooks |
+| `terms:read` | `alst.terms.get/search` |
+| `terms:write` | `alst.terms.update` (status, translation, notes, …) — shown as a warning |
+| `events:read` | `eventListener` for core events and `alst.events.query` |
+| `dict:read` | `alst.dict.lookup` |
+| `net:<host>` | `alst.net.fetch` to that host; `net:*.example.org` covers subdomains; HTTPS only |
+
+Limits: `storage` value ≤ 64 KB, ≤ 1,000 keys per extension; `net.fetch` ≤ 10 MB response,
+20 s timeout, no cookies, no redirects to non-permitted hosts.
+
+#### 6.9.5 Runtime: workers and the RPC protocol
+- One **Web Worker per active extension**, created lazily when a reader for one of its
+  languages opens, kept alive while the app runs, terminated on disable/uninstall.
+- Workers start from a same-origin bootstrap (`ui/src/lib/ext/worker-bootstrap.ts`) that
+  installs the `alst` API object, then `import()`s the extension's `runtime.entry` from
+  `alstext://`. `wasm` extensions ship a JS entry that instantiates their `.wasm` (see §6.9.8).
+- Messages are JSON-RPC-like: `{ id, method, params }` → `{ id, result }` | `{ id, error: { code, message } }`.
+  Host→extension methods: `activate`, `annotate`, `decorate`, `command`, `event`,
+  `settingsChanged`, `panelMessage`. Extension→host: the `alst.*` calls in §6.9.7.
+- **Timeouts:** `activate` 5 s; `annotate`/`decorate` 2 s per part; `command` 30 s.
+  A timeout or thrown error marks the extension *errored* for this run: the reader renders
+  without it, a toast names it, and the Extensions screen shows the error. The worker is terminated.
+- **CSP** (set in `tauri.conf.json`, replacing `null`): `default-src 'self'`;
+  `script-src 'self' 'wasm-unsafe-eval' alstext: http://alstext.localhost`;
+  `connect-src ipc: http://ipc.localhost alstext: http://alstext.localhost`;
+  `frame-src alstext: http://alstext.localhost`; `img-src 'self' data: alstext: http://alstext.localhost`;
+  `style-src 'self' 'unsafe-inline'`. Workers inherit it, so extensions cannot reach the
+  network except via `alst.net.fetch`.
+- **Must verify in M3:** a worker cannot call Tauri commands directly (no invoke key in the
+  worker; a direct `fetch` to the IPC endpoint is rejected). If that can't be guaranteed,
+  commands that accept an extension id must refuse calls not originating from the main window.
+- The sandbox is defence in depth, not a guarantee: extensions are installed deliberately by
+  the user, and the install prompt says what they can access.
+
+#### 6.9.6 Reader pipeline with extensions
+1. `get_part_view` (Rust) returns `tokens` (the §5.2 `Token[]`, flattened with sentence index)
+   in addition to `units`; each `Unit` gains `tokenRange: [first, last]` (inclusive token indices).
+2. UI host runs **annotators** in `annotatorOrder`, sequentially. Each receives
+   `{ language, tokens }` with the annotations added so far and returns
+   `{ [tokenIndex]: { [capability]: value } }`, containing only capabilities it `provides`
+   (others are dropped with a dev-console warning). Results are merged into `tokens[i].ann`.
+   Annotations are cached per part + fingerprint in memory for the session.
+3. UI host runs **decorators** (in parallel) with `{ language, units, tokens }` and gets
+   `{ [unitIndex]: RenderHint[] }`. Decorators re-run whenever unit statuses change (after a
+   term save); annotators do not.
+4. The reader merges hints (§6.9.6.1) and renders.
+
+##### 6.9.6.1 Render hints (M3 set)
+
+```ts
+type Role = "noun"|"verb"|"adjective"|"adverb"|"particle"|"function"|"name"
+          | "accent-high"|"accent-low"|"accent-drop"|"info"|"warn"|"c1"|"c2"|"c3"|"c4"|"c5"|"c6";
+type RenderHint =
+  | { kind: "ruby"; text: string }                       // above the unit
+  | { kind: "color"; role: Role }                        // text colour
+  | { kind: "underline"; role: Role; style?: "solid"|"dotted"|"wavy"|"double" }
+  | { kind: "badge"; text: string; role?: Role }         // ≤ 4 chars, superscript
+  | { kind: "tooltip"; text: string };                   // plain text
+  // reserved, rendered from M5: { kind: "pitchLine"; pattern: ("H"|"L")[]; drop?: number }
+```
+
+- **Background is reserved for term status** (the core reader's main signal); decorators can't set it.
+- Merge: for `ruby`, `color` and `underline`, the first decorator in `decoratorOrder` wins;
+  `badge` and `tooltip` accumulate (badges max 2 shown, tooltips joined by line breaks).
+- Roles map to CSS variables `--role-<name>` defined in light and dark themes in `app.css`.
+- Unknown hint kinds are ignored (forward compatibility).
+
+#### 6.9.7 Host API v1.0 (what M3 implements)
+Defined once as TypeScript in `sdk/alstroemeria.d.ts` (MIT); this list is a summary.
+
+```
+alst.extension            { id, version, language }          // language of the current activation
+alst.settings.get(): Promise<object>
+alst.storage.get(key) / .set(key, value) / .delete(key) / .keys()
+alst.terms.get({ ids? , texts?, language }) / .search({ language, query, status? })   // terms:read
+alst.terms.update(id, { status?, translation?, notes?, reading? })                    // terms:write
+alst.events.emit(type, payload)                       // type is prefixed with the extension id
+alst.events.query({ type?, since?, limit? })          // events:read
+alst.dict.lookup(language, query)                     // dict:read
+alst.net.fetch(url, { method?, headers?, body? }) → { status, headers, text }   // net:<host>
+alst.ui.toast(message, { kind?: "info"|"error" })
+alst.ui.openPanel(panelId)
+alst.ui.openTerm(language, text)                      // opens the term editor in the reader
+alst.ui.copyText(text)                                // clipboard, via the host
+alst.reader.current() → { workId, partId, language } | null
+```
+
+Extension module shape (the `runtime.entry` exports):
+
+```ts
+export function activate(ctx): void | Promise<void>;
+export function annotate?(input: { language: string; tokens: Token[] }): Promise<Record<number, Record<string, unknown>>>;
+export function decorate?(input: { language: string; units: Unit[]; tokens: Token[] }): Promise<Record<number, RenderHint[]>>;
+export const commands?: Record<string, (args: unknown) => unknown>;
+export function onEvent?(event: Event): void;
+export function onSettingsChanged?(settings: object): void;
+export function onPanelMessage?(panelId: string, msg: unknown): unknown;
+```
+
+**Panels:** `contributes.panels: [{ id, title, entry: "panel.html", placement: "sidebar" }]`.
+Rendered in `<iframe sandbox="allow-scripts">` from `alstext://`. The panel uses
+`sdk/panel.js` (MIT) to `postMessage` to the host, which relays to the extension's worker
+(`onPanelMessage`) or to permitted `alst.*` calls. On load the host sends
+`{ theme: { cssVariables } }` so panels match light/dark mode.
+
+**Commands:** `contributes.commands: [{ id, title, context?: "reader"|"term"|"global" }]`;
+shown in a command palette (Ctrl/Cmd+K) and, for `term`, in the term editor's menu.
+
+**Settings:** `contributes.settings` is a JSON Schema object whose properties may be
+`boolean`, `number`, `string` or `string` with `enum`. The Extensions screen renders a form
+from it; values are stored in `extension_state.settings`.
+
+#### 6.9.8 Writing extensions in Rust (WASM ABI v1)
+To avoid toolchain dependencies (no `wasm-bindgen`), WASM modules use a tiny JSON-in-memory ABI:
+
+- Exports: `memory`, `alst_alloc(len: u32) -> u32`, `alst_free(ptr: u32, len: u32)`, and for each
+  hook `alst_<hook>(ptr: u32, len: u32) -> u64` where the input is UTF-8 JSON and the return
+  packs `(out_ptr << 32) | out_len` of a UTF-8 JSON result the host frees.
+- Hooks available: `annotate`, `decorate`, `command` (same JSON shapes as §6.9.7).
+- Host API calls from WASM are not available in ABI v1; the JS shim can call `alst.*` and pass results in.
+- `sdk/wasm-shim.js` (MIT) implements the JS side generically. It is vendored into the
+  extension folder (the build script copies it for first-party extensions), and the entry is:
+  `import { createWasmExtension } from "./wasm-shim.js";`
+  `export default createWasmExtension(new URL("./ext.wasm", import.meta.url));`
+- An entry may use named exports or a default-exported object with the same members (§6.9.7).
+- Build: `cargo build --target wasm32-unknown-unknown --release`; a script
+  (`npm run build:extensions`) copies the `.wasm` into the extension folder. Built `.wasm`
+  files are git-ignored and produced before `tauri dev/build`.
+
+#### 6.9.9 First-party examples shipped in M3 (MIT)
+- **`es.morph-hints`** (Rust → WASM; annotator + decorator; targets `es`; no permissions):
+  heuristically tags infinitives (-ar/-er/-ir), gerunds (-ando/-iendo), participles (-ado/-ido)
+  and -mente adverbs; provides `es.morph`; decorates with `underline` role `verb`/`adverb`
+  and a tooltip ("gerund"). Settings: which categories to show. Proves the WASM path.
+- **`addon.density`** (JS; panel + command + eventListener; targets `*`; `events:read`, `terms:read`):
+  sidebar panel showing the current part's unknown-word % and its 10 most frequent unknown
+  words (click → opens the term editor); remembers per-language history from `part.read`
+  events in `storage`; command "Copy unknown words" to the clipboard. Proves language-universal add-ons.
+
 ## 7. Dictionaries
 
 - **Yomitan format** (zip of `index.json` + `term_bank_*.json`, `term_meta_bank_*.json`,
@@ -458,7 +659,7 @@ Crates are created when their milestone starts, not before.
   Modifications to MPL-licensed files must stay open, but the app can be combined with code under
   any license, it's compatible with app-store distribution (incl. iOS), and third-party
   extensions may use any license.
-- **First-party extensions** (`extensions/*`): **MIT**, so they can be freely copied as templates.
+- **First-party extensions** (`extensions/*`) and the **extension SDK** (`sdk/*`): **MIT**, so they can be freely copied as templates.
   Each extension folder carries its own `LICENSE` and sets `"license"` in its manifest.
 - Dependencies must be MPL-compatible (MIT, Apache-2.0, BSD, ISC, Zlib, MPL, Unicode are fine).
   **No GPL/AGPL/LGPL code** in the core, which rules out copying Yomitan code (§7).

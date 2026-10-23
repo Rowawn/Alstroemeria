@@ -13,7 +13,7 @@ Targets Windows, macOS, Linux, Android; iOS later. Peer-to-peer LAN sync. Everyt
 - Extensions use only the public host API (SPEC §6). First-party modules too.
 - Don't add crates, dependencies or features ahead of their milestone.
 - If an implementation needs a spec change, update `docs/SPEC.md` in the same commit.
-- License: core is MPL-2.0, `extensions/*` are MIT (SPEC §14). No GPL-family dependencies or copied code.
+- License: core is MPL-2.0, `extensions/*` and `sdk/*` are MIT (SPEC §14). No GPL-family dependencies or copied code.
 
 ## Commands
 - `npm run tauri dev` — desktop dev

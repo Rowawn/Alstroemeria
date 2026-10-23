@@ -8,7 +8,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 0 | **Spec** | Opus | `docs/SPEC.md`, this roadmap, `CLAUDE.md` exist ✅ |
 | 1 | **Skeleton** | Sonnet | See below ✅ |
 | 2 | **Reader MVP** ✅ (see status below) | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
-| 3 | **Extension host** | Opus design, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
+| 3 | **Extension host** | Opus design ✅, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Sonnet (Opus for deinflection) | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
 | 6 | **LAN sync** | Opus | Pairing by QR, convergence property tests pass, media sync policy |
@@ -78,3 +78,37 @@ Not verified: the real desktop window end-to-end (file pickers, EPUB/dictionary 
 Save to Downloads, opening links in the system browser), and nothing was run on the Android emulator.
 Known gaps: no `local_token_cache`, no keyboard shortcuts for status, dictionary lookup is exact-match only
 (no lemma/deinflection), Yomitan meta banks ignored, EPUB images skipped. Next: M3.
+
+## M3 — Extension host (build plan)
+
+Design: SPEC §6.9 (read §6.9 fully; §6.1–6.8 only for background). Steps, each ending with tests passing:
+
+1. **`crates/alst-ext`** (pure Rust): manifest types + validation (incl. `license`), bundled
+   extensions via `include_dir`, installed-folder scan, `.alext` install/uninstall with the zip
+   safety checks, capability resolution (§6.9.3) and the permission checker (§6.9.4).
+   Unit tests: wildcards, provider choice, unmet requires, cycles, deterministic order,
+   API-version and platform filtering, zip-slip rejection, `net:` host matching.
+   Replace `alst-text::bundled` with languages loaded from the registry.
+   Add `schemas/extension.schema.json` matching the manifest types (for authors; CI validates first-party manifests).
+2. **Shell:** `alstext://` protocol; commands `list_extensions`, `resolve_extensions(language)`,
+   `install_extension` (raw bytes), `uninstall_extension`, `set_extension_enabled`,
+   `set_extension_settings`, `set_provider`, `set_decorator_order`, and `ext_call(extId, method, params)`
+   which routes host-API calls with permission checks (storage, terms, events, dict, net).
+   Core events are forwarded to the UI as a Tauri event. `get_part_view` adds `tokens` and `Unit.tokenRange`.
+3. **CSP** per §6.9.5, then verify the app still works and that a worker cannot invoke commands directly (write down how it was checked).
+4. **UI extension host** (`ui/src/lib/ext/`): worker bootstrap, RPC with timeouts and error state,
+   annotator/decorator pipeline, hint merging, render hints in the reader, role CSS variables (light + dark).
+   Vitest for RPC timeouts and hint merging.
+5. **UI screens:** Extensions screen (list, enable per language, provider picker, decorator order,
+   permissions, settings form from JSON Schema, install `.alext` with permission prompt, errors and
+   disabled reasons); sidebar panel host (sandboxed iframe + relay); command palette (Ctrl/Cmd+K).
+6. **SDK:** `sdk/alstroemeria.d.ts`, `sdk/panel.js`, `sdk/wasm-shim.js`, `sdk/README.md` (how to write
+   an extension in JS and in Rust), MIT `LICENSE`.
+7. **Examples:** `extensions/es-morph-hints` (Rust → WASM, its own small crate excluded from the
+   default workspace build) and `extensions/addon-density` (JS). `npm run build:extensions` wired
+   before `tauri dev/build`. Add `rustup target add wasm32-unknown-unknown` to the README.
+8. **Verify:** desktop end-to-end (both examples visible and configurable; install a zipped copy of
+   `addon-density` as `.alext`; disable/enable; a deliberately slow extension times out cleanly);
+   then Android: the reader shows `es-morph-hints` underlines and the density panel opens.
+
+Out of scope: lookupProvider, importer/exporter, activity, native runtime, JS tokenizers, extension sync.
