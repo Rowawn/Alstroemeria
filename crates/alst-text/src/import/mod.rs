@@ -4,6 +4,9 @@
 pub mod article;
 pub mod epub;
 mod html;
+pub mod media;
+pub mod rss;
+pub mod ytdlp;
 
 use regex::Regex;
 

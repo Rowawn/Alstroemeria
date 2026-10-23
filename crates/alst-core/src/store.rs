@@ -17,6 +17,9 @@ pub struct NewPart {
     pub title: Option<String>,
     pub text: String,
     pub word_count: i64,
+    /// Media file (a `media.id`) this part plays, and its cue list as `parts.timing` JSON (SPEC §4.2, §8).
+    pub media_hash: Option<String>,
+    pub timing: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +41,7 @@ impl NewWork {
             kind: "text".into(),
             author: None,
             source_url: None,
-            parts: vec![NewPart { title: None, text: text.into(), word_count: text.split_whitespace().count() as i64 }],
+            parts: vec![NewPart { title: None, text: text.into(), word_count: text.split_whitespace().count() as i64, media_hash: None, timing: None }],
         }
     }
 }
@@ -65,6 +68,18 @@ pub struct Part {
     pub title: Option<String>,
     pub text: String,
     pub word_count: i64,
+    pub media_hash: Option<String>,
+    pub timing: Option<String>,
+}
+
+/// A row of the `media` table (SPEC §8).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRow {
+    pub id: String,
+    pub mime: String,
+    pub size: i64,
+    pub original_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +253,12 @@ impl Store {
             if let Some(t) = &part.title {
                 cols.push(("title", t.clone().into()));
             }
+            if let Some(h) = &part.media_hash {
+                cols.push(("media_hash", h.clone().into()));
+            }
+            if let Some(t) = &part.timing {
+                cols.push(("timing", t.clone().into()));
+            }
             insert_row(&tx, "parts", &new_id(), &cols, stamp, &site)?;
         }
         tx.commit()?;
@@ -309,7 +330,7 @@ impl Store {
     pub fn get_part(&self, id: &str) -> Result<Part> {
         self.conn
             .query_row(
-                "SELECT id, work_id, idx, title, text, word_count FROM parts WHERE id = ?1 AND deleted = 0",
+                "SELECT id, work_id, idx, title, text, word_count, media_hash, timing FROM parts WHERE id = ?1 AND deleted = 0",
                 [id],
                 |r| {
                     Ok(Part {
@@ -319,6 +340,8 @@ impl Store {
                         title: r.get(3)?,
                         text: r.get(4)?,
                         word_count: r.get(5)?,
+                        media_hash: r.get(6)?,
+                        timing: r.get(7)?,
                     })
                 },
             )
@@ -326,6 +349,40 @@ impl Store {
                 rusqlite::Error::QueryReturnedNoRows => Error::Invalid(format!("no part {id}")),
                 e => e.into(),
             })
+    }
+
+    /// Record a media file that is already in the media directory (SPEC §8). The id is the content hash,
+    /// so registering the same file twice is a no-op.
+    pub fn register_media(&mut self, hash: &str, mime: &str, size: i64, original_name: Option<&str>) -> Result<MediaRow> {
+        if let Some(row) = self.media_info(hash)? {
+            return Ok(row);
+        }
+        let now = hlc::wall_ms();
+        let stamp = self.clock.tick(now);
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        // A tombstoned row for the same hash is revived rather than duplicated.
+        tx.execute("DELETE FROM media WHERE id = ?1 AND deleted = 1", [hash])?;
+        let mut cols: Vec<(&str, Value)> =
+            vec![("created_at", (now as i64).into()), ("deleted", 0.into()), ("mime", mime.to_string().into()), ("size", size.into())];
+        if let Some(n) = original_name {
+            cols.push(("original_name", n.to_string().into()));
+        }
+        insert_row(&tx, "media", hash, &cols, stamp, &site)?;
+        tx.commit()?;
+        Ok(MediaRow { id: hash.into(), mime: mime.into(), size, original_name: original_name.map(Into::into) })
+    }
+
+    pub fn media_info(&self, hash: &str) -> Result<Option<MediaRow>> {
+        match self.conn.query_row(
+            "SELECT id, mime, size, original_name FROM media WHERE id = ?1 AND deleted = 0",
+            [hash],
+            |r| Ok(MediaRow { id: r.get(0)?, mime: r.get(1)?, size: r.get(2)?, original_name: r.get(3)? }),
+        ) {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Texts of all parts of works in `language`, for example-sentence search.
@@ -915,6 +972,25 @@ mod tests {
     }
 
     #[test]
+    fn media_and_timing_round_trip_and_register_is_idempotent() {
+        let mut s = Store::open_in_memory().unwrap();
+        let h = "a".repeat(64);
+        let m = s.register_media(&h, "audio/mpeg", 10, Some("x.mp3")).unwrap();
+        assert_eq!(m.mime, "audio/mpeg");
+        s.register_media(&h, "audio/other", 99, None).unwrap();
+        assert_eq!(s.media_info(&h).unwrap().unwrap().size, 10);
+        let n: i64 = s.conn().query_row("SELECT count(*) FROM _changes WHERE tbl = 'media' AND row_id = ?1", [&h], |r| r.get(0)).unwrap();
+        assert_eq!(n, 5);
+        let mut w = sample();
+        w.parts[0].media_hash = Some(h.clone());
+        w.parts[0].timing = Some(r#"{"v":1,"cues":[]}"#.into());
+        let w = s.create_work(w).unwrap();
+        let p = s.get_part(&s.list_parts(&w.id).unwrap()[0].id).unwrap();
+        assert_eq!(p.media_hash.as_deref(), Some(h.as_str()));
+        assert_eq!(p.timing.as_deref(), Some(r#"{"v":1,"cues":[]}"#));
+    }
+
+    #[test]
     fn create_and_list_work() {
         let mut s = Store::open_in_memory().unwrap();
         let w = s.create_work(sample()).unwrap();
@@ -987,7 +1063,7 @@ mod tests {
         n.kind = "epub".into();
         n.author = Some("Ana".into());
         n.parts = (0..3)
-            .map(|i| NewPart { title: Some(format!("Cap {i}")), text: format!("texto {i}"), word_count: 2 })
+            .map(|i| NewPart { title: Some(format!("Cap {i}")), text: format!("texto {i}"), word_count: 2, media_hash: None, timing: None })
             .collect();
         let w = s.create_work(n).unwrap();
         assert_eq!(w.part_count, 3);

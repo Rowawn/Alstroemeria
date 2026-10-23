@@ -1,6 +1,7 @@
 //! Text pipeline: declarative tokenizer engine, multi-word term matching, importers.
 //! Pure logic: no database, no Tauri.
 
+pub mod cues;
 pub mod export;
 pub mod import;
 pub mod lang;

@@ -87,7 +87,7 @@ Rules:
 works          id, language, title, kind(text|epub|article|audio|video|lyrics|subtitle),
                author, source_url, source_license, pack_id, tags(json), archived,
                settings(json)
-parts          id, work_id, idx, title, text, media_hash, timing(json: cue list), word_count
+parts          id, work_id, idx, title, text, media_hash, timing(json: cue list, see §8), word_count
                -- a chapter, page, episode, or song; reader opens one part at a time
 concepts       id, language, kind(lexeme|grammar|phrase), key, meta(json)
                -- the unit of knowledge; terms point to it; future SRS schedules on it (§11)
@@ -323,7 +323,7 @@ Implemented in M3: manifest loading and validation, registry, capability resolut
 uninstall of `.alext`, permissions, the worker runtime (`js` and `wasm`), and these extension
 points: **annotator, decorator, panel, command, eventListener**, plus settings and storage.
 Deferred to the milestone that first needs them: `tokenizer`/`normalizer` in JS (M5, if ever;
-core engines cover planned languages), `lookupProvider` (M5), `importer`/`exporter` (M4/M8),
+core engines cover planned languages), `lookupProvider` (M5), `importer`/`exporter` (the `importer` contract is fixed in §6.9.10 but not implemented; M8),
 `activity` (M9/M11), `native` runtime (M11). The manifest schema accepts their declarations
 now; the host ignores them with a logged notice.
 
@@ -543,6 +543,24 @@ To avoid toolchain dependencies (no `wasm-bindgen`), WASM modules use a tiny JSO
   words (click → opens the term editor); remembers per-language history from `part.read`
   events in `storage`; command "Copy unknown words" to the clipboard. Proves language-universal add-ons.
 
+#### 6.9.10 Importers: extension point and the M4 decision
+
+**Contract (reserved, not implemented).** A manifest may declare `contributes.importers: [{ id, title, accepts }]`, with `accepts`
+one of `"url"`, `"text"` or `"file:<ext>[,<ext>]"`. The extension's `import(input)` command returns an **import bundle**
+(`{ title, kind, author?, sourceUrl?, parts: [{ title?, text, timing? }], media?: [{ url | bytes, name }] }`), which the host
+validates and writes through `alst-core::store` and the media store. An extension never writes the store, the media directory or
+the file system itself, and its network use stays limited by its `net:` permissions.
+
+**Decision for M4: the podcast RSS and YouTube importers are core features, not extensions.** Reasons:
+1. YouTube needs to run a user-installed executable (`yt-dlp`). The permission model (§6.9.4) has no process-spawn permission and a
+   worker can't spawn processes; adding one would be an unsandboxed escape hatch, which is what the `native` runtime (M11) is for.
+2. Podcast import downloads large binaries (audio) into the media store; host API v1 has no streaming media write, and moving
+   hundreds of MB through worker RPC is wasteful. Workers also have no XML parser (`DOMParser`), while the core already has one.
+3. Both are small, first-party, and need to work on iOS later (RSS) without a native runtime.
+They produce the same import-bundle data as the contract above (`alst-text::import::{rss, ytdlp, media}` return plain data; the
+shell stores it), so promoting them into extensions later, or exposing the contract for third-party importers (M8 packs), changes
+who produces the bundle, not what is stored. Until then the `importers` key is accepted in manifests and ignored with a notice.
+
 ## 7. Dictionaries
 
 - **Yomitan format** (zip of `index.json` + `term_bank_*.json`, `term_meta_bank_*.json`,
@@ -561,15 +579,51 @@ To avoid toolchain dependencies (no `wasm-bindgen`), WASM modules use a tiny JSO
 | Source | M | Handling |
 |---|---|---|
 | Plain text, paste | 2 | Split into parts by size or blank lines |
-| EPUB | 2 | Chapters become parts; images go to media |
+| EPUB | 2 | Chapters become parts; images go to media (images still skipped) |
 | Web article (URL) | 2 | Fetched by core; readability extraction |
 | Subtitles SRT/VTT, lyrics LRC | 4 | Cues become `parts.timing`; the reader highlights and seeks |
 | Audio/video file + subtitles | 4 | File goes to media store; cue-synced reader |
-| Podcast RSS | 4 | Importer extension; transcript if provided, else optional Whisper (M11) |
-| YouTube subtitles | 4 | Desktop only, via a `yt-dlp` binary the user installs |
+| Podcast RSS | 4 | Core importer (§6.9.10); needs a transcript in the feed, else (M11) optional Whisper |
+| YouTube subtitles | 4 | Core importer, desktop only, via a `yt-dlp` binary the user installs; subtitles only |
 
-Media files are content-addressed (`sha256`) and stored under `media/ab/abcdef…`, so they are
-deduplicated and sync-friendly.
+### 8.1 Media store
+
+Media files are content-addressed (`sha256`) and stored under `<app data>/media/ab/abcdef…` (no extension), so they are
+deduplicated and sync-friendly. The synced `media` row (`id` = hash, `mime`, `size`, `original_name`) is written by
+`alst-core::store`; `alst-core::media` only handles files. Parts reference a file by `parts.media_hash`; several parts
+(the chunks of one long file) may share one.
+
+- **Upload** is chunked (`media_upload_begin` / `media_upload_chunk` of 1 MiB / the finishing import command), into
+  `media/tmp/` and hashed at the end, so memory stays bounded and Android's JSON-encoded binary bodies stay small per call.
+  Half-finished uploads are deleted at startup. Downloads (podcast audio) stream into the same store, max 2 GiB per file.
+- **Playback** uses the `alstmedia://` protocol (`http://alstmedia.localhost/<hash>` on Windows/Android) with `Range`
+  support, and `media-src` in the CSP. A request is answered with at most 8 MiB, so a plain GET of a big file is still
+  bounded. The UI builds URLs with `convertFileSrc(hash, "alstmedia")`.
+- A media row whose file is absent on this device (future sync, §9) is reported to the reader as `present: false`.
+- Accepted types: whatever the webview can play. The import accepts common audio/video extensions (mp3, m4a, aac, ogg, opus,
+  wav, flac, mp4, m4v, webm, mov, mkv) and shows an error in the player when the platform can't decode the file.
+
+### 8.2 `parts.timing`
+
+```json
+{ "v": 1, "cues": [ { "start": 1000, "end": 3500, "a": 0, "b": 15 } ] }
+```
+
+`start`/`end` are milliseconds from the start of the media file (absolute, so parts of a long file share one file).
+`a`/`b` are the cue's range in the part text as **UTF-16 code units**, the same offsets as tokens and reader units.
+The part text is the cues' text joined by `\n`; each cue is flattened to one line (markup, `{\an8}`, entities removed).
+A parser (`alst-text::cues`) handles SRT, WebVTT (incl. `NOTE`/`STYLE`, settings, inline tags; optional removal of the repeated
+lines of rolling auto-captions) and LRC (`ti`/`ar`/`offset` tags, several stamps per line, enhanced word tags dropped; a cue ends
+where the next starts). Files are decoded as UTF-8/UTF-16 (BOM), else windows-1252. Files are split into parts of about 5000
+characters at cue boundaries; part titles show the time range. A part without `timing` but with `media_hash` (a transcript with no
+times) shows the player and plain text.
+
+### 8.3 Cue-synced reader
+
+When a part has timing, the reader shows a player (`<audio>` or `<video>`) and one row per cue. The current cue (the last one
+that has started) is highlighted; a cue row's play button, or a click on its blank area, seeks to the cue and plays; clicking a
+word still opens the term editor. Previous/next cue, playback speed, and **repeat sentence** (a cue is the unit; it loops until
+turned off) are provided. Leaving or finishing a part logs `media.listen` (§4.3) with the seconds actually played.
 
 ## 9. LAN sync (M6)
 

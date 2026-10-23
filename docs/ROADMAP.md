@@ -9,7 +9,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 1 | **Skeleton** | Sonnet | See below ✅ |
 | 2 | **Reader MVP** ✅ (see status below) | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
 | 3 | **Extension host** | Opus design ✅, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
-| 4 | **Media** | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
+| 4 | **Media** ✅ (see status below) | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Sonnet (Opus for deinflection) | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
 | 6 | **LAN sync** | Opus | Pairing by QR, convergence property tests pass, media sync policy |
 | 7 | **Releases** | Sonnet | Signed installers for Windows/macOS/Linux, Android APK/AAB, updater |
@@ -149,3 +149,57 @@ allows `ws:` and the Vite origin, so it does not prove the CSP), real large `.al
 Known gaps: `local_token_cache` still absent; a worker serves all languages of an extension, with
 `alst.extension.language` following the latest call; panel height is fixed; no keyboard navigation in the Extensions
 screen beyond native controls. Next: M4.
+
+## M4 — Media (plan)
+
+Decisions (none changes the architecture, so no pause; the one real fork, importers, is recorded in SPEC §6.9.10):
+
+- **RSS and YouTube are core importers, not extensions.** YouTube needs to spawn a process and RSS/audio needs large binary
+  downloads into the media store; neither fits the worker sandbox or host API v1, and the sandbox has no XML parser.
+  Both produce the same `ImportedWork` data the future `importer` extension point would return (SPEC §6.9.10).
+- **Media store (SPEC §8):** `alst-core::media` (files under `<data>/media/ab/<sha256>`, no extension) + `Store::register_media`
+  (synced `media` row). No migration: `media` and `parts.media_hash/timing` already exist.
+- **Upload:** chunked commands (`media_upload_begin/chunk/finish`, 1 MiB chunks), so memory stays bounded and Android's
+  JSON-encoded binary bodies stay small per call. Hashing happens at finish.
+- **Playback:** `alstmedia://` protocol (Range support, bounded reads) + `media-src` in the CSP; the UI builds URLs with `convertFileSrc`.
+- **Timing:** `parts.timing = {"v":1,"cues":[{start,end,a,b}]}`: ms, and `a`/`b` are UTF-16 offsets of the cue in the part
+  text (same offsets as tokens/units). Cue text is flattened to one line per cue; cues are joined by `\n`. Long files split into
+  several parts (~5000 chars, at cue boundaries) that share one `media_hash` with absolute times.
+- **Parsers** in `alst-text::cues`: SRT, VTT (incl. rolling auto-caption dedupe), LRC (offset tag, multiple stamps, enhanced word tags).
+  Subtitle bytes are decoded as UTF-8/UTF-16 (BOM) or else windows-1252.
+- **Reader:** player bar (audio or video), cue rows with a play button, current-cue highlight (rAF), click a cue's blank area to seek,
+  previous/next cue, repeat-sentence (a cue = a sentence for repeat), speed. `media.listen` event on finishing a part.
+- **Podcast:** two steps (preview feed → pick episode). Needs a transcript (`podcast:transcript` SRT/VTT/JSON/text); episodes without one
+  are listed but not importable (Whisper is M11).
+- **YouTube:** desktop only; `yt-dlp` found on `PATH` plus the usual install dirs (GUI apps on macOS lack the shell `PATH`);
+  the tab is hidden when not found. Subtitles only, as a text work (no video playback inside the webview).
+
+Steps: 1 `alst-text::cues` + tests → 2 `alst-core::media` + store changes + tests → 3 RSS + yt-dlp importers → 4 shell commands + protocol + CSP
+→ 5 UI (import forms, player, cue reader) + Vitest → 6 desktop verify (self-test) → 7 Android API 34 verify → 8 docs/status.
+
+### M4 status
+
+Done: media store (`alst-core::media`, `Store::register_media`), `alst-text::cues` (SRT/VTT/LRC), importers for audio/video + subtitle
+file, podcast RSS (SRT/VTT/JSON/HTML/text transcripts) and YouTube subtitles (desktop, `yt-dlp`, tab hidden when absent), `alstmedia://`
+protocol with Range + `media-src` CSP, chunked upload, cue-synced reader (highlight, click-to-seek, prev/next, repeat sentence, speed,
+`media.listen`), SPEC §6.9.10 (importer decision: RSS and YouTube are core), §8, §4.2. `cargo test --workspace` and `npm test`
+(34 Vitest tests) pass. No migration was needed.
+
+Verified in the real apps through the media self-test (`ui/src/lib/selftest-media.ts`; put `media <feed url> [<youtube url>]` in the
+`selftest` file of the data folder): macOS WebKit and the Android API 34 emulator (WebView 113) both passed every check: chunked
+upload (3 chunks), dedupe, LRC lyrics, rejected bad files, seeking/Range playback, DOM-driven reader (highlight follows playback,
+click-to-seek, word click opens the editor without seeking, prev/next, repeat loops, speed), `media.listen`, podcast feed with
+4 episodes (m4a+SRT, mp4+VTT, wav+JSON; one without transcript refused), real YouTube auto-captions via yt-dlp on desktop
+(959 cues → 3 text parts), yt-dlp reported unavailable on Android.
+
+What plays (actually decoded and played in the self-test): AAC/m4a, WAV, H.264 mp4 on both macOS and Android. By `canPlayType` only
+(not played; no encoder here): mp3, ogg/opus, flac, webm (VP8/VP9) are supported on both; HEVC "probably" on both (hardware-dependent);
+`.mov` works on macOS only; `.mkv` on neither, so such files import but show "can't play this file" in the player.
+
+Not verified: Windows and iOS; the desktop window by screenshot (no capture here; the Android UI was not inspected by eye either,
+only through DOM assertions); large files (the 3 MB upload was the largest; Android sends 1 MiB chunks as JSON, so a very large
+audiobook will be slow); the release CSP on Android (the dev build allows the Vite origin; `alstmedia` is in both CSPs);
+podcast feeds from real servers (only a local feed was used); YouTube videos with manual subtitles (only auto-captions tried).
+Known gaps: media files are not removed when a work is deleted (there is no delete yet); no waveform/A-B loop; a multi-word term
+spanning two cues renders in the first cue; `ALST_DATA_DIR`-less Android `adb` setup: use `npm run tauri android dev` (a plain debug APK
+loads the Vite URL and can't reach IPC). Next: M5.

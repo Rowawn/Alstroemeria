@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, type Language, type PartInfo, type Work } from "./api";
+  import MediaImport from "./MediaImport.svelte";
+  import Podcast from "./Podcast.svelte";
+  import YouTube from "./YouTube.svelte";
 
   let { languages, onOpen }: { languages: Language[]; onOpen: (partId: string) => void } = $props();
 
@@ -8,7 +11,8 @@
   let expanded = $state<string | null>(null);
   let parts = $state<PartInfo[]>([]);
 
-  let tab = $state<"text" | "epub" | "url">("text");
+  let tab = $state<"text" | "epub" | "url" | "media" | "podcast" | "youtube">("text");
+  let ytdlp = $state(false); // YouTube tab only when yt-dlp is installed (desktop)
   let language = $state(languages[0]?.id ?? "");
   let title = $state("");
   let text = $state("");
@@ -48,13 +52,16 @@
     }
   }
 
-  onMount(refresh);
+  onMount(() => {
+    refresh();
+    api.ytdlpStatus().then((s) => (ytdlp = s.available)).catch(() => {});
+  });
 </script>
 
 <h1>Library</h1>
 
 {#if works.length === 0}
-  <p class="muted">Nothing here yet. Add a text, an EPUB, or a web article below.</p>
+  <p class="muted">Nothing here yet. Add a text, an EPUB, a web article, or audio/video with subtitles below.</p>
 {:else}
   <ul class="works">
     {#each works as w (w.id)}
@@ -85,14 +92,24 @@
   <button class:primary={tab === "text"} onclick={() => (tab = "text")}>Text</button>
   <button class:primary={tab === "epub"} onclick={() => (tab = "epub")}>EPUB</button>
   <button class:primary={tab === "url"} onclick={() => (tab = "url")}>Web article</button>
+  <button class:primary={tab === "media"} onclick={() => (tab = "media")}>Audio / video</button>
+  <button class:primary={tab === "podcast"} onclick={() => (tab = "podcast")}>Podcast</button>
+  {#if ytdlp}<button class:primary={tab === "youtube"} onclick={() => (tab = "youtube")}>YouTube</button>{/if}
 </div>
+<label class="row">
+  Language
+  <select bind:value={language}>
+    {#each languages as l (l.id)}<option value={l.id}>{l.name}</option>{/each}
+  </select>
+</label>
+{#if tab === "media"}
+  <MediaImport {language} onDone={refresh} />
+{:else if tab === "podcast"}
+  <Podcast {language} onDone={refresh} />
+{:else if tab === "youtube"}
+  <YouTube {language} onDone={refresh} />
+{:else}
 <form onsubmit={add}>
-  <label class="row">
-    Language
-    <select bind:value={language}>
-      {#each languages as l (l.id)}<option value={l.id}>{l.name}</option>{/each}
-    </select>
-  </label>
   {#if tab === "text"}
     <input placeholder="Title" bind:value={title} required />
     <textarea placeholder="Paste text" rows="8" bind:value={text} required></textarea>
@@ -108,6 +125,7 @@
   <button class="primary" type="submit" disabled={busy}>{busy ? "Importing…" : "Add"}</button>
   {#if error}<p class="error">{error}</p>{/if}
 </form>
+{/if}
 
 <style>
   .works,
@@ -134,6 +152,7 @@
     margin-top: 0.6rem;
   }
   .tabs {
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.4rem;
+    flex-wrap: wrap;
   }
 </style>

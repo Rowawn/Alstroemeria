@@ -16,6 +16,7 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 mod ext;
+mod media;
 
 pub(crate) struct AppState {
     store: Mutex<Store>,
@@ -25,6 +26,8 @@ pub(crate) struct AppState {
     /// Installed and bundled extensions. Lock order: `registry` before `store`.
     registry: RwLock<alst_ext::Registry>,
     ext_root: PathBuf,
+    /// Content-addressed media files (SPEC §8).
+    media: alst_core::media::MediaDir,
     /// Language definitions from enabled language extensions; rebuilt when extensions change.
     languages: RwLock<Vec<LanguageDef>>,
     /// SQLite rowid of the last event forwarded to the UI.
@@ -100,7 +103,7 @@ fn store_import(state: &AppState, language: &str, w: ImportedWork) -> Res<Work> 
     let parts = w
         .parts
         .into_iter()
-        .map(|p| NewPart { word_count: lang.count_words(&p.text) as i64, title: p.title, text: p.text })
+        .map(|p| NewPart { word_count: lang.count_words(&p.text) as i64, title: p.title, text: p.text, media_hash: None, timing: None })
         .collect();
     state
         .store()?
@@ -112,6 +115,26 @@ fn store_import(state: &AppState, language: &str, w: ImportedWork) -> Res<Work> 
             source_url: w.source_url,
             parts,
         })
+        .map_err(err)
+}
+
+/// Store a work whose parts play `media_hash` (a media-store id); parts without times get none.
+fn store_media_work(state: &AppState, language: &str, w: alst_text::import::media::MediaWork, media_hash: Option<&str>) -> Res<Work> {
+    let lang = state.lang(language)?;
+    let parts = w
+        .parts
+        .into_iter()
+        .map(|p| NewPart {
+            word_count: lang.count_words(&p.text) as i64,
+            title: p.title,
+            text: p.text,
+            media_hash: media_hash.map(String::from),
+            timing: p.timing,
+        })
+        .collect();
+    state
+        .store()?
+        .create_work(NewWork { language: language.into(), title: w.title, kind: w.kind.into(), author: w.author, source_url: w.source_url, parts })
         .map_err(err)
 }
 
@@ -183,6 +206,19 @@ struct PartView {
     rtl: bool,
     units: Vec<Unit>,
     tokens: Vec<ViewToken>,
+    /// The part's media file and cue list (SPEC §8); `timing` is `parts.timing` parsed.
+    media: Option<MediaView>,
+    timing: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaView {
+    hash: String,
+    mime: String,
+    video: bool,
+    /// False when the file isn't on this device (e.g. synced metadata without the file).
+    present: bool,
 }
 
 /// Term lookup tables for a language: key → state, plus the multi-word matcher.
@@ -210,7 +246,12 @@ fn get_part_view(state: State<AppState>, part_id: String) -> Res<PartView> {
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
     let (units, tokens) = view_for(&store, &lang, &part.text)?;
-    Ok(PartView { parts: store.list_parts(&work.id).map_err(err)?, work, part_id, rtl: lang.rtl, units, tokens })
+    let media = match &part.media_hash {
+        Some(h) => store.media_info(h).map_err(err)?.map(|m| MediaView { present: state.media.exists(&m.id), video: m.mime.starts_with("video/"), hash: m.id, mime: m.mime }),
+        None => None,
+    };
+    let timing = part.timing.as_deref().and_then(|t| serde_json::from_str(t).ok());
+    Ok(PartView { parts: store.list_parts(&work.id).map_err(err)?, work, part_id, rtl: lang.rtl, units, tokens, media, timing })
 }
 
 fn squash(text: &str) -> String {
@@ -452,6 +493,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .register_uri_scheme_protocol("alstext", ext::serve)
+        .register_uri_scheme_protocol("alstmedia", media::serve)
         .setup(|app| {
             let dir = match std::env::var_os("ALST_DATA_DIR") {
                 Some(d) => PathBuf::from(d),
@@ -463,7 +505,10 @@ pub fn run() {
             let registry = alst_ext::Registry::load(&alst_ext::registry::BUNDLED, Some(&ext_root));
             let languages = alst_ext::host::language_defs(&registry, &store)?;
             let event_cursor = AtomicI64::new(store.last_event_rowid()?);
+            let media = alst_core::media::MediaDir::new(dir.join("media"));
+            media.clear_tmp();
             app.manage(AppState {
+                media,
                 store: Mutex::new(store),
                 db_path,
                 data_dir: dir,
@@ -481,6 +526,14 @@ pub fn run() {
             create_work,
             import_epub,
             import_url,
+            media::media_upload_begin,
+            media::media_upload_chunk,
+            media::import_media_file,
+            media::podcast_feed,
+            media::podcast_import,
+            media::ytdlp_status,
+            media::import_youtube,
+            media::log_listen,
             get_part_view,
             open_term,
             save_term,

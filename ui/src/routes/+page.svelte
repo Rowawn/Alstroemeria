@@ -27,7 +27,9 @@
         languages = l;
         // Developer-only: on-device verification of the extension host (see selftest.ts).
         const selftest = await invoke<string | null>("selftest_enabled").catch(() => null);
-        if (selftest !== null) {
+        if (selftest?.startsWith("media")) {
+          (await import("$lib/selftest-media")).run(l, selftest, { openPart: (id) => (partId = id), closePart: () => (partId = null) });
+        } else if (selftest !== null) {
           (await import("$lib/ext/selftest")).run(l, selftest, {
             openPart: (id) => (partId = id),
             showExtensions: () => (tab = "extensions"),

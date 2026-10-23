@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { api, type Language, type PartView, type Unit } from "./api";
+  import { api, mediaUrl, type Language, type PartView, type Unit } from "./api";
+  import { clock, cueAt, groupUnits, repeatTarget } from "./cues";
   import { extHost, readerBridge } from "./ext";
   import type { MergedHints } from "./ext/hints";
   import { hintStyle } from "./ext/render";
@@ -46,11 +47,97 @@
   const sentenceText = $derived(
     range ? units.filter((u) => u.sentence === units[range.lo].sentence).map((u) => u.text).join("").trim() : "",
   );
+  // Media (SPEC §8): the player, the current cue and the repeat lock.
+  let player = $state<HTMLMediaElement | null>(null);
+  let cur = $state(-1);
+  let repeat = $state(false);
+  let locked = -1;
+  let rate = $state(1);
+  let playing = $state(false);
+  let playError = $state("");
+  let listened = 0; // seconds of actual playback, reported as `media.listen`
+  let playedAt = 0;
+  let raf = 0;
+  const cues = $derived(view?.timing?.cues ?? null);
+  const groups = $derived(cues ? groupUnits(units, cues) : []);
   const idx = $derived(view?.parts.findIndex((p) => p.id === partId) ?? -1);
 
   const panels = $derived(
     (resolved?.active ?? []).flatMap((ext) => ext.contributes.panels.map((p) => ({ ext, panel: p }))),
   );
+
+  function tick() {
+    raf = 0;
+    if (!player || !cues) return;
+    const ms = player.currentTime * 1000;
+    const back = repeat ? repeatTarget(cues, locked, ms) : null;
+    if (back !== null) {
+      player.currentTime = back / 1000;
+      cur = locked;
+    } else {
+      const k = cueAt(cues, ms);
+      if (k !== cur) {
+        cur = k;
+        if (playing) document.querySelector(`[data-cue="${k}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }
+    if (playing) raf = requestAnimationFrame(tick);
+  }
+
+  function onPlay() {
+    playing = true;
+    playedAt = Date.now();
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+
+  function onPause() {
+    if (playing) listened += (Date.now() - playedAt) / 1000;
+    playing = false;
+    tick();
+  }
+
+  function onLoaded() {
+    // A part later in a long file starts at its first cue.
+    if (player && cues?.length && player.currentTime === 0 && cues[0].start > 1000) player.currentTime = cues[0].start / 1000;
+    if (player) player.playbackRate = rate;
+    tick();
+  }
+
+  function seek(k: number, play = true) {
+    if (!player || !cues?.[k]) return;
+    player.currentTime = cues[k].start / 1000;
+    cur = k;
+    if (repeat) locked = k;
+    if (play) void player.play().catch(() => {});
+  }
+
+  function step(delta: number) {
+    if (!cues) return;
+    seek(Math.min(cues.length - 1, Math.max(0, (cur < 0 ? 0 : cur) + delta)));
+  }
+
+  function toggleRepeat() {
+    repeat = !repeat;
+    locked = repeat ? Math.max(cur, 0) : -1;
+  }
+
+  function cueClick(e: MouseEvent, k: number) {
+    if ((e.target as Element).closest(".w") || !window.getSelection()?.isCollapsed) return;
+    seek(k);
+  }
+
+  function reportListening() {
+    if (playing) {
+      listened += (Date.now() - playedAt) / 1000;
+      playedAt = Date.now();
+    }
+    if (listened >= 1) void api.logListen(partId, listened).catch(() => {});
+    listened = 0;
+  }
+
+  $effect(() => {
+    if (player) player.playbackRate = rate;
+  });
 
   async function load() {
     try {
@@ -105,6 +192,8 @@
   });
 
   onDestroy(() => {
+    reportListening();
+    if (raf) cancelAnimationFrame(raf);
     runGen++;
     readerBridge.current = null;
     readerBridge.openPanel = () => {};
@@ -160,6 +249,7 @@
   }
 
   async function finish() {
+    reportListening();
     await api.finishPart(partId, markKnown, Date.now() - opened);
     finishing = false;
     sel = null;
@@ -212,18 +302,83 @@
         {/each}
       </div>
 
+      {#snippet unitView(u: Unit, i: number)}{#if u.isWord}{@const h = hints[i]}<span
+            class={cls(u, i)}
+            style={hintStyle(h)}
+            title={h?.tooltip}
+            data-i={i}
+            >{#if h?.ruby}<ruby>{u.text}<rt>{h.ruby}</rt></ruby>{:else}{u.text}{/if}{#each h?.badges ?? [] as b}<sup
+                class="badge"
+                style={b.role ? `color: var(--role-${b.role})` : ""}>{b.text}</sup
+              >{/each}</span
+          >{:else}<span class="nw" data-i={i}>{u.text}</span>{/if}{/snippet}
+
+      {#if view.media}
+        <div class="player">
+          {#if !view.media.present}
+            <p class="error">This device doesn't have the media file for this part.</p>
+          {:else}
+            {#if view.media.video}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video
+                bind:this={player}
+                src={mediaUrl(view.media.hash)}
+                controls
+                playsinline
+                preload="metadata"
+                onplay={onPlay}
+                onpause={onPause}
+                onended={onPause}
+                onseeked={tick}
+                onloadedmetadata={onLoaded}
+                onerror={() => (playError = `This device can't play this file (${view?.media?.mime}).`)}
+              ></video>
+            {:else}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <audio
+                bind:this={player}
+                src={mediaUrl(view.media.hash)}
+                controls
+                preload="metadata"
+                onplay={onPlay}
+                onpause={onPause}
+                onended={onPause}
+                onseeked={tick}
+                onloadedmetadata={onLoaded}
+                onerror={() => (playError = `This device can't play this file (${view?.media?.mime}).`)}
+              ></audio>
+            {/if}
+            {#if playError}<p class="error">{playError}</p>{/if}
+            {#if cues}
+              <div class="row controls">
+                <button onclick={() => step(-1)} aria-label="Previous sentence" disabled={cues.length < 2}>⏮</button>
+                <button onclick={() => step(1)} aria-label="Next sentence" disabled={cues.length < 2}>⏭</button>
+                <button class:primary={repeat} aria-pressed={repeat} onclick={toggleRepeat}>↻ Repeat sentence</button>
+                <label class="row">
+                  Speed
+                  <select bind:value={rate}>
+                    {#each [0.5, 0.75, 1, 1.25, 1.5] as r}<option value={r}>{r}×</option>{/each}
+                  </select>
+                </label>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="text" dir={view.rtl ? "rtl" : "ltr"} onmouseup={onPointerUp}>
-        {#each units as u, i}{#if u.isWord}{@const h = hints[i]}<span
-              class={cls(u, i)}
-              style={hintStyle(h)}
-              title={h?.tooltip}
-              data-i={i}
-              >{#if h?.ruby}<ruby>{u.text}<rt>{h.ruby}</rt></ruby>{:else}{u.text}{/if}{#each h?.badges ?? [] as b}<sup
-                  class="badge"
-                  style={b.role ? `color: var(--role-${b.role})` : ""}>{b.text}</sup
-                >{/each}</span
-            >{:else}<span class="nw" data-i={i}>{u.text}</span>{/if}{/each}
+      <div class="text" class:cued={!!cues} dir={view.rtl ? "rtl" : "ltr"} onmouseup={onPointerUp}>
+        {#if cues}
+          {#each cues as c, k}
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+            <div class="cue" class:cur={k === cur} data-cue={k} onclick={(e) => cueClick(e, k)}>
+              <button class="cue-play" aria-label={`Play from ${clock(c.start)}`} onclick={() => seek(k)}>▶ {clock(c.start)}</button>
+              <span class="ctext">{#each groups[k] as i}{@render unitView(units[i], i)}{/each}</span>
+            </div>
+          {/each}
+        {:else}
+          {#each units as u, i}{@render unitView(u, i)}{/each}
+        {/if}
       </div>
 
       <div class="row bar">
@@ -306,6 +461,49 @@
     font-size: 1.15rem;
     margin: 1rem 0;
     user-select: text;
+  }
+  .player {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: var(--bg);
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .player audio,
+  .player video {
+    width: 100%;
+    max-height: 40vh;
+  }
+  .controls {
+    margin-top: 0.3rem;
+    flex-wrap: wrap;
+  }
+  .text.cued {
+    white-space: normal;
+  }
+  .cue {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.1rem 0.4rem;
+    border-radius: 6px;
+    border-left: 3px solid transparent;
+    cursor: default;
+  }
+  .cue.cur {
+    background: var(--panel);
+    border-left-color: var(--accent);
+  }
+  .cue-play {
+    flex: none;
+    font-size: 0.7rem;
+    min-width: 4.2rem;
+    padding: 0.1rem 0.3rem;
+    opacity: 0.7;
+  }
+  .ctext {
+    flex: 1;
   }
   .w {
     cursor: pointer;

@@ -25,6 +25,7 @@
         "frame-src": "alstext: http://alstext.localhost",
         "img-src": "'self' data: alstext: http://alstext.localhost",
         "style-src": "'self' 'unsafe-inline'",
+        "media-src": "alstmedia: http://alstmedia.localhost",
         "worker-src": "blob:"
       },
       "devCsp": {
@@ -34,6 +35,7 @@
         "frame-src": "alstext: http://alstext.localhost",
         "img-src": "'self' data: alstext: http://alstext.localhost",
         "style-src": "'self' 'unsafe-inline'",
+        "media-src": "alstmedia: http://alstmedia.localhost",
         "worker-src": "blob:"
       }
     }
