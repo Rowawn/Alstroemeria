@@ -113,6 +113,8 @@ export type DictInfo = {
   /** False for dictionaries imported before conjugation rules were stored: re-import to enable them. */
   rulesImported: boolean;
   metaCount: number;
+  /** The synced row this index came from; null if it can't be shared with other devices (imported before sync). */
+  sourceId: string | null;
 };
 
 export const STATUSES = [0, 1, 2, 3, 4, 5, 98, 99] as const;

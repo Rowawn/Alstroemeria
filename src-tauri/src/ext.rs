@@ -10,7 +10,7 @@ use tauri::ipc::Request;
 use tauri::{Manager, State, UriSchemeContext, Wry};
 
 /// Reload the registry and language definitions after the set of extensions or their state changed.
-fn reload(state: &AppState) -> Res<()> {
+pub(crate) fn reload(state: &AppState) -> Res<()> {
     let mut reg = state.registry.write().map_err(err)?;
     *reg = Registry::load(&alst_ext::registry::BUNDLED, Some(&state.ext_root));
     let store = state.store()?;
@@ -57,7 +57,8 @@ pub fn inspect_extension(state: State<AppState>, request: Request<'_>) -> Res<Pa
 
 #[tauri::command]
 pub fn install_extension(state: State<AppState>, request: Request<'_>) -> Res<ExtInfo> {
-    let pkg = install::read_package(&crate::raw_body(&request)?).map_err(err)?;
+    let body = crate::raw_body(&request)?;
+    let pkg = install::read_package(&body).map_err(err)?;
     {
         let reg = state.registry()?;
         if let Some(b) = reg.get(&pkg.manifest.id).filter(|e| e.source == Source::Bundled) {
@@ -71,7 +72,14 @@ pub fn install_extension(state: State<AppState>, request: Request<'_>) -> Res<Ex
     }
     install::install(&state.ext_root, &pkg).map_err(err)?;
     // Installing is the user's explicit approval: enable it, keeping any settings from an earlier install.
-    state.store()?.set_ext_state(&pkg.manifest.id, Some(true), None, None).map_err(err)?;
+    // The package is kept and recorded so paired devices install it too (SPEC §9.6).
+    let (hash, size) = state.media.put_bytes(&body, install::MAX_TOTAL_BYTES).map_err(err)?;
+    {
+        let mut store = state.store()?;
+        store.register_media(&hash, "application/zip", size as i64, Some(&format!("{}.alext", pkg.manifest.id))).map_err(err)?;
+        store.put_extension_package(&pkg.manifest.id, &pkg.manifest.version, &hash).map_err(err)?;
+        store.set_ext_state(&pkg.manifest.id, Some(true), None, None).map_err(err)?;
+    }
     reload(&state)?;
     let store = state.store()?;
     let states = host::user_states(&store).map_err(err)?;
@@ -90,7 +98,11 @@ pub fn uninstall_extension(state: State<AppState>, id: String) -> Res<()> {
     }
     install::uninstall(&state.ext_root, &id).map_err(err)?;
     // Keep the row (disabled) so settings survive a reinstall (SPEC §6.9.2).
-    state.store()?.set_ext_state(&id, Some(false), None, None).map_err(err)?;
+    {
+        let mut store = state.store()?;
+        store.set_ext_state(&id, Some(false), None, None).map_err(err)?;
+        store.delete_extension_package(&id).map_err(err)?;
+    }
     reload(&state)
 }
 

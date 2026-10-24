@@ -19,3 +19,11 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# The barcode scanner plugin (CameraX + ML Kit) crashes when minified.
+-dontobfuscate
+-dontoptimize
+-keep class app.tauri.** { *; }
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.** { *; }
+-keep class androidx.camera.** { *; }
+-dontwarn **

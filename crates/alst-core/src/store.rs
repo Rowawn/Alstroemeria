@@ -7,9 +7,10 @@ use serde::Serialize;
 use std::path::Path;
 
 pub struct Store {
-    conn: Connection,
-    clock: hlc::Hlc,
+    pub(crate) conn: Connection,
+    pub(crate) clock: hlc::Hlc,
     site_id: String,
+    pub(crate) tables: crate::sync::Tables,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +136,27 @@ pub struct TermStateRow {
     pub word_count: i64,
 }
 
+/// A synced dictionary: its archive is the media file `media_hash` (SPEC §9.6).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictionaryRow {
+    pub id: String,
+    pub title: String,
+    pub revision: Option<String>,
+    pub language: String,
+    pub media_hash: String,
+    pub enabled: bool,
+}
+
+/// A synced installed extension package (`.alext`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtPackageRow {
+    pub id: String,
+    pub version: String,
+    pub media_hash: String,
+}
+
 /// Row of `extension_state`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExtStateRow {
@@ -177,6 +199,26 @@ pub fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
+/// Id of a natural-key row (SPEC §9.1): a UUIDv8 from `sha256(table 0x00 k1 0x00 k2 …)`, so devices that
+/// create "the same" row offline agree on its id.
+pub fn derive_id(table: &str, keys: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(table.as_bytes());
+    for k in keys {
+        h.update([0u8]);
+        h.update(k.as_bytes());
+    }
+    let digest = h.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_custom_bytes(bytes).into_uuid().to_string()
+}
+
+pub fn term_id(language: &str, text_lc: &str) -> String {
+    derive_id("terms", &[language, text_lc])
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::from_conn(crate::db::open(path)?)
@@ -186,7 +228,7 @@ impl Store {
         Self::from_conn(crate::db::open_in_memory()?)
     }
 
-    fn from_conn(conn: Connection) -> Result<Self> {
+    fn from_conn(mut conn: Connection) -> Result<Self> {
         let site_id = match conn
             .query_row("SELECT value FROM local_settings WHERE key = 'site_id'", [], |r| {
                 r.get::<_, String>(0)
@@ -200,12 +242,24 @@ impl Store {
                 s
             }
         };
-        let last: i64 = conn.query_row("SELECT COALESCE(MAX(hlc), 0) FROM _changes", [], |r| r.get(0))?;
-        Ok(Self { conn, clock: hlc::Hlc::new(last as u64), site_id })
+        crate::rekey::rekey_v1(&mut conn)?;
+        let last: i64 = conn.query_row(
+            "SELECT MAX((SELECT COALESCE(MAX(hlc), 0) FROM _changes), (SELECT COALESCE(MAX(hlc), 0) FROM events),
+                        (SELECT COALESCE(MAX(hlc), 0) FROM local_sync_clock))",
+            [],
+            |r| r.get(0),
+        )?;
+        let tables = crate::sync::discover(&conn)?;
+        Ok(Self { conn, clock: hlc::Hlc::new(last as u64), site_id, tables })
     }
 
     pub fn site_id(&self) -> &str {
         &self.site_id
+    }
+
+    /// The database schema version (`PRAGMA user_version`); peers must match to sync (SPEC §9.4).
+    pub fn schema_version(&self) -> i64 {
+        self.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0)
     }
 
     /// Insert a work and its parts, recording every column in `_changes`.
@@ -361,14 +415,13 @@ impl Store {
         let stamp = self.clock.tick(now);
         let site = self.site_id.clone();
         let tx = self.conn.transaction()?;
-        // A tombstoned row for the same hash is revived rather than duplicated.
-        tx.execute("DELETE FROM media WHERE id = ?1 AND deleted = 1", [hash])?;
+        // A tombstoned row for the same hash is revived (put_row overwrites it) rather than duplicated.
         let mut cols: Vec<(&str, Value)> =
             vec![("created_at", (now as i64).into()), ("deleted", 0.into()), ("mime", mime.to_string().into()), ("size", size.into())];
         if let Some(n) = original_name {
             cols.push(("original_name", n.to_string().into()));
         }
-        insert_row(&tx, "media", hash, &cols, stamp, &site)?;
+        put_row(&tx, "media", hash, &cols, stamp, &site)?;
         tx.commit()?;
         Ok(MediaRow { id: hash.into(), mime: mime.into(), size, original_name: original_name.map(Into::into) })
     }
@@ -494,7 +547,7 @@ impl Store {
                     ("term_id", term_id.to_string().into()),
                     ("parent_id", parent.clone().into()),
                 ];
-                insert_row(&tx, "term_parents", &new_id(), &cols, stamp, &site)?;
+                put_row(&tx, "term_parents", &derive_id("term_parents", &[term_id, parent]), &cols, stamp, &site)?;
             }
         }
         tx.commit()?;
@@ -678,7 +731,7 @@ impl Store {
             None => insert_row(
                 &tx,
                 "ext_data",
-                &new_id(),
+                &derive_id("ext_data", &[ext, key]),
                 &[
                     ("created_at", (hlc::wall_ms() as i64).into()),
                     ("deleted", 0.into()),
@@ -798,6 +851,119 @@ impl Store {
         );
     }
 
+    /// Tombstone a term (its parent links are left; they hide with it). Returns whether it existed.
+    pub fn delete_term(&mut self, language: &str, text_lc: &str) -> Result<bool> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let id = find_term(&tx, language, text_lc)?;
+        if let Some(id) = &id {
+            update_cols(&tx, "terms", id, &[("deleted", 1.into())], stamp, &site)?;
+        }
+        tx.commit()?;
+        Ok(id.is_some())
+    }
+
+    /// All live media rows (SPEC §9.6 uses them to decide which files to fetch).
+    pub fn media_list(&self) -> Result<Vec<MediaRow>> {
+        let mut stmt = self.conn.prepare("SELECT id, mime, size, original_name FROM media WHERE deleted = 0 ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok(MediaRow { id: r.get(0)?, mime: r.get(1)?, size: r.get(2)?, original_name: r.get(3)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    // ---- dictionaries and extension packages (SPEC §9.6) -----------------------------------------
+
+    /// Record that a dictionary archive (already in the media store as `media_hash`) was imported.
+    pub fn put_dictionary(&mut self, media_hash: &str, title: &str, revision: Option<&str>, language: &str) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let mut cols: Vec<(&str, Value)> = vec![
+            ("created_at", (hlc::wall_ms() as i64).into()),
+            ("deleted", 0.into()),
+            ("title", title.to_string().into()),
+            ("language", language.to_string().into()),
+            ("media_hash", media_hash.to_string().into()),
+            ("enabled", 1.into()),
+        ];
+        if let Some(r) = revision {
+            cols.push(("revision", r.to_string().into()));
+        }
+        put_row(&tx, "dictionaries", media_hash, &cols, stamp, &site)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn dictionaries(&self) -> Result<Vec<DictionaryRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, revision, language, media_hash, enabled FROM dictionaries WHERE deleted = 0 ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(DictionaryRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                revision: r.get(2)?,
+                language: r.get(3)?,
+                media_hash: r.get(4)?,
+                enabled: r.get::<_, i64>(5)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Ids of tombstoned dictionaries (peers remove their local index for them).
+    pub fn deleted_dictionary_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM dictionaries WHERE deleted = 1")?;
+        Ok(stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn delete_dictionary(&mut self, id: &str) -> Result<bool> {
+        self.tombstone("dictionaries", id)
+    }
+
+    /// Record an installed `.alext` (already in the media store as `media_hash`).
+    pub fn put_extension_package(&mut self, ext_id: &str, version: &str, media_hash: &str) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let cols: Vec<(&str, Value)> = vec![
+            ("created_at", (hlc::wall_ms() as i64).into()),
+            ("deleted", 0.into()),
+            ("version", version.to_string().into()),
+            ("media_hash", media_hash.to_string().into()),
+        ];
+        put_row(&tx, "extension_packages", ext_id, &cols, stamp, &site)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn extension_packages(&self) -> Result<Vec<ExtPackageRow>> {
+        let mut stmt = self.conn.prepare("SELECT id, version, media_hash FROM extension_packages WHERE deleted = 0 ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok(ExtPackageRow { id: r.get(0)?, version: r.get(1)?, media_hash: r.get(2)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn deleted_extension_package_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM extension_packages WHERE deleted = 1")?;
+        Ok(stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn delete_extension_package(&mut self, ext_id: &str) -> Result<bool> {
+        self.tombstone("extension_packages", ext_id)
+    }
+
+    fn tombstone(&mut self, tbl: &str, id: &str) -> Result<bool> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let live: bool = tx.query_row(&format!("SELECT count(*) FROM {tbl} WHERE id = ?1 AND deleted = 0"), [id], |r| Ok(r.get::<_, i64>(0)? > 0))?;
+        if live {
+            update_cols(&tx, tbl, id, &[("deleted", 1.into())], stamp, &site)?;
+        }
+        tx.commit()?;
+        Ok(live)
+    }
+
     /// Connection for device-local `local_*` tables (dictionaries). Never use it for synced tables.
     pub fn local_conn(&self) -> &Connection {
         &self.conn
@@ -837,14 +1003,8 @@ fn validate_patch(p: &TermPatch) -> Result<()> {
 }
 
 fn find_term(conn: &Connection, language: &str, text_lc: &str) -> Result<Option<String>> {
-    // Oldest live row wins if two devices created the same term concurrently.
-    Ok(conn
-        .query_row(
-            "SELECT id FROM terms WHERE language = ?1 AND text_lc = ?2 AND deleted = 0 ORDER BY created_at, id LIMIT 1",
-            params![language, text_lc],
-            |r| r.get(0),
-        )
-        .ok())
+    // The id is derived from the natural key (SPEC §9.1), so there is at most one row.
+    Ok(conn.query_row("SELECT id FROM terms WHERE id = ?1 AND deleted = 0", [term_id(language, text_lc)], |r| r.get(0)).ok())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,7 +1022,7 @@ fn upsert_term(
     let opt = |v: &Option<String>| -> Value { v.clone().map_or(Value::Null, Value::Text) };
     match find_term(tx, language, text_lc)? {
         None => {
-            let id = new_id();
+            let id = term_id(language, text_lc);
             let status = patch.status.unwrap_or(0);
             let mut cols: Vec<(&str, Value)> = vec![
                 ("created_at", (hlc::wall_ms() as i64).into()),
@@ -874,17 +1034,20 @@ fn upsert_term(
                 ("tags", "[]".to_string().into()),
                 ("word_count", word_count.into()),
             ];
+            // A tombstone of the same term is revived: every column is written again with a fresh clock, so
+            // nothing of the deleted row comes back (SPEC §9.1).
+            let revive = tx.query_row("SELECT count(*) FROM terms WHERE id = ?1", [&id], |r| Ok(r.get::<_, i64>(0)? > 0))?;
             for (name, v) in [
                 ("translation", &patch.translation),
                 ("reading", &patch.reading),
                 ("notes", &patch.notes),
                 ("lemma", &patch.lemma),
             ] {
-                if v.is_some() {
+                if v.is_some() || revive {
                     cols.push((name, opt(v)));
                 }
             }
-            insert_row(tx, "terms", &id, &cols, stamp, site)?;
+            put_row(tx, "terms", &id, &cols, stamp, site)?;
             if status != 0 {
                 let payload = serde_json::json!({ "from": 0, "to": status });
                 insert_event(tx, site, stamp, "term.status", Some(language), Some(("term", &id)), &payload)?;
@@ -934,6 +1097,7 @@ fn insert_event(
     subject: Option<(&str, &str)>,
     payload: &serde_json::Value,
 ) -> Result<()> {
+    crate::sync::bump_clock(conn, site, stamp)?;
     conn.execute(
         "INSERT INTO events (id, hlc, site_id, type, language, subject_type, subject_id, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -967,8 +1131,16 @@ fn insert_row(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], sta
     Ok(())
 }
 
-/// Upsert the column clock; the write wins only if `(hlc, site_id)` is newer.
+/// Insert the row, or if it exists (a tombstone being revived) write every given column again.
+fn put_row(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], stamp: u64, site: &str) -> Result<()> {
+    let exists = tx.query_row(&format!("SELECT count(*) FROM {tbl} WHERE id = ?1"), [id], |r| Ok(r.get::<_, i64>(0)? > 0))?;
+    if exists { update_cols(tx, tbl, id, cols, stamp, site) } else { insert_row(tx, tbl, id, cols, stamp, site) }
+}
+
+/// Upsert the column clock; the write wins only if `(hlc, site_id)` is newer. Also advances this site's
+/// entry in the sync vector (SPEC §9.2).
 fn record_change(tx: &Transaction, tbl: &str, row: &str, col: &str, v: &Value, stamp: u64, site: &str) -> Result<()> {
+    crate::sync::bump_clock(tx, site, stamp)?;
     tx.execute(
         "INSERT INTO _changes (tbl, row_id, col, value, hlc, site_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(tbl, row_id, col) DO UPDATE SET value = excluded.value, hlc = excluded.hlc, site_id = excluded.site_id

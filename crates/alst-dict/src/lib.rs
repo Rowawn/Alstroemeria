@@ -35,6 +35,8 @@ pub struct DictInfo {
     /// False for dictionaries imported before `rules` were stored: re-import to enable conjugation lookup.
     pub rules_imported: bool,
     pub meta_count: i64,
+    /// The synced `dictionaries` row this index was built from; `None` if it can't be shared (imported before M6).
+    pub source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,7 +124,49 @@ pub fn import(conn: &mut Connection, zip_bytes: &[u8], language: &str, now_ms: i
         params![count, dict_id],
     )?;
     tx.commit()?;
-    Ok(DictInfo { id: dict_id, title, revision, language: language.to_string(), enabled: true, entry_count: count, rules_imported: true, meta_count })
+    Ok(DictInfo { id: dict_id, title, revision, language: language.to_string(), enabled: true, entry_count: count, rules_imported: true, meta_count, source_id: None })
+}
+
+/// Remember which synced `dictionaries` row (the archive's media hash) a local index was built from (SPEC §9.6).
+pub fn set_source(conn: &Connection, id: i64, source: &str) -> Result<()> {
+    conn.execute("UPDATE local_dict_dicts SET source_id = ?1 WHERE id = ?2", params![source, id])?;
+    Ok(())
+}
+
+/// What `reconcile` did.
+#[derive(Debug, Default)]
+pub struct Reconciled {
+    /// Titles imported from an archive that arrived by sync.
+    pub imported: Vec<String>,
+    /// Local indexes removed because the dictionary was deleted on another device.
+    pub removed: usize,
+    pub errors: Vec<String>,
+}
+
+/// Bring local dictionary indexes in line with the synced `dictionaries` rows (SPEC §9.6): import the ones
+/// whose archive is on this device but which have no index yet, and drop indexes whose row is a tombstone.
+pub fn reconcile(conn: &mut Connection, live: &[alst_core::DictionaryRow], deleted: &[String], media: &alst_core::media::MediaDir) -> Result<Reconciled> {
+    let mut out = Reconciled::default();
+    for id in deleted {
+        out.removed += conn.execute("DELETE FROM local_dict_dicts WHERE source_id = ?1", [id])?;
+    }
+    let have: HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT source_id FROM local_dict_dicts WHERE source_id IS NOT NULL")?;
+        stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+    };
+    let now = alst_core::hlc::wall_ms() as i64;
+    for d in live.iter().filter(|d| !have.contains(&d.id)) {
+        let Some(path) = media.path(&d.media_hash).filter(|p| p.is_file()) else { continue };
+        let result = std::fs::read(&path).map_err(|e| fmt(e)).and_then(|bytes| import(conn, &bytes, &d.language, now));
+        match result {
+            Ok(info) => {
+                set_source(conn, info.id, &d.id)?;
+                out.imported.push(info.title);
+            }
+            Err(e) => out.errors.push(format!("{}: {e}", d.title)),
+        }
+    }
+    Ok(out)
 }
 
 /// Collapse JMdict-style rule tags to the condition names the deinflector uses (`v5k` → `v5`, …).
@@ -268,7 +312,7 @@ fn flatten_into(v: &Value, out: &mut String) {
 
 pub fn list(conn: &Connection) -> Result<Vec<DictInfo>> {
     let mut stmt =
-        conn.prepare("SELECT id, title, revision, language, enabled, entry_count, rules_imported, (SELECT count(*) FROM local_dict_meta m WHERE m.dict_id = local_dict_dicts.id) FROM local_dict_dicts ORDER BY id")?;
+        conn.prepare("SELECT id, title, revision, language, enabled, entry_count, rules_imported, (SELECT count(*) FROM local_dict_meta m WHERE m.dict_id = local_dict_dicts.id), source_id FROM local_dict_dicts ORDER BY id")?;
     let rows = stmt.query_map([], |r| {
         Ok(DictInfo {
             id: r.get(0)?,
@@ -279,9 +323,15 @@ pub fn list(conn: &Connection) -> Result<Vec<DictInfo>> {
             entry_count: r.get(5)?,
             rules_imported: r.get::<_, i64>(6)? != 0,
             meta_count: r.get(7)?,
+            source_id: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// The synced row id of a local dictionary, if it has one.
+pub fn source_of(conn: &Connection, id: i64) -> Result<Option<String>> {
+    Ok(conn.query_row("SELECT source_id FROM local_dict_dicts WHERE id = ?1", [id], |r| r.get(0)).unwrap_or(None))
 }
 
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
@@ -739,5 +789,26 @@ mod tests {
         let broken = make_zip(&[("index.json", r#"{"title":"x"}"#), ("term_bank_1.json", "not json")]);
         assert!(import(&mut conn, &broken, "es", 1).is_err());
         assert!(list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconcile_imports_archives_that_arrived_and_drops_tombstoned_ones() {
+        use alst_core::media::MediaDir;
+        let dir = std::env::temp_dir().join(format!("alst-dict-rec-{}", alst_core::store::new_id()));
+        let media = MediaDir::new(&dir);
+        let (hash, _) = media.put_bytes(&v3(), 1 << 28).unwrap();
+        let mut conn = alst_core::db::open_in_memory().unwrap();
+        let row = alst_core::DictionaryRow { id: hash.clone(), title: "Mini".into(), revision: None, language: "es".into(), media_hash: hash.clone(), enabled: true };
+        let r = reconcile(&mut conn, std::slice::from_ref(&row), &[], &media).unwrap();
+        assert_eq!((r.imported.len(), r.errors.len()), (1, 0));
+        assert_eq!(lookup(&conn, "es", "perro", 5).unwrap().len(), 1);
+        // Already indexed: nothing to do. Archive not on this device yet: skipped, not an error.
+        let again = reconcile(&mut conn, std::slice::from_ref(&row), &[], &media).unwrap();
+        assert!(again.imported.is_empty() && again.errors.is_empty());
+        let absent = alst_core::DictionaryRow { id: "f".repeat(64), media_hash: "f".repeat(64), ..row.clone() };
+        assert!(reconcile(&mut conn, &[absent], &[], &media).unwrap().imported.is_empty());
+        let gone = reconcile(&mut conn, &[], std::slice::from_ref(&hash), &media).unwrap();
+        assert_eq!(gone.removed, 1);
+        assert!(lookup(&conn, "es", "perro", 5).unwrap().is_empty());
     }
 }

@@ -11,7 +11,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 3 | **Extension host** | Opus design ✅, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** ✅ (see status below) | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Opus design ✅, Sonnet build | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
-| 6 | **LAN sync** | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
+| 6 | **LAN sync** ✅ (see status below) | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
 | 7 | **Releases** | Sonnet | Signed installers for Windows/macOS/Linux, Android APK/AAB, updater |
 | 8 | **Content packs** | Sonnet | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
 | 9 | **SRS module** | Opus design, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
@@ -311,3 +311,30 @@ on `PATH`), then `zipalign -P 16 4` and `apksigner sign` with `~/.android/debug.
 debug-key password), then `adb install -r`. Always sign with that same key, so installs keep the user's data.
 
 Out of scope: see the end of SPEC §9.
+
+### M6 status
+
+Done: steps 1–7. Migration `0005_sync.sql` (sync clock, pending rows, `dictionaries` and `extension_packages` synced tables, peer columns); derived ids for
+natural-key rows with a one-time re-key (`rekey.rs`, tested for references, `_changes`, events and delete-and-recreate); `alst-core::sync` (`next_batch`, `apply`
+with materialize and pending rows); new crate `alst-sync` (session protocol, Noise `XX` / `XXpsk3` over TCP, pairing by code and QR, mDNS, asset exchange with
+per-peer media policy, `Service`); dictionaries and `.alext` packages are stored as media on import and installed on peers after a sync (`alst_dict::reconcile`,
+`alst_ext::install::reconcile`); Devices tab, QR display and scanner, top-bar sync indicator, sync triggers (start, 30 s after a local write, every 10 min, on
+discovery), readers and lists refresh on `sync://applied`, "Download now" for files not yet on a device. The SPEC §9.5 property tests (convergence, sync twice
+changes nothing, order independence, cut-off resume, concurrent edits, delete vs revive) pass; breaking the same-`(site, hlc)` group handling on purpose makes them fail.
+`cargo test --workspace` and `npm test` (66) pass. Spec edits in §9.2 and §9.4: `next_batch` sends changes and events cut at one key; foreign keys are switched off
+(not deferred) while applying a batch; sessions run one direction at a time.
+
+Verified on the macOS release app and a Samsung Galaxy S26-class phone (SM-S948U, Android 17, arm64 release APK, debug key), same Wi-Fi: pairing by code; pairing by QR
+(camera scanner); automatic discovery over mDNS; term status edits made on both devices while the phone was offline both survived the sync; a podcast episode in the
+Mac library played on the phone; a dictionary imported on the Mac was installed on the phone and gave definitions in the reader; Remove on both sides.
+Timings from the phone's log: an incremental sync with a few rows takes 38–92 ms (e.g. 12 rows received 92 ms, 1–2 rows sent 38 ms). A cold first full sync was not
+captured, because the library was already shared by the time logging started; the library here is small.
+
+Found only on the device (fixed): Android 17 (targetSdk 37) silently drops LAN connections and mDNS until `ACCESS_LOCAL_NETWORK` is granted; the manifest declares it
+and `MainActivity` requests it, but on this phone no prompt appeared and the user had to enable it in Settings, so check that again. The release build (R8) crashed the
+barcode scanner, so `proguard-rules.pro` now disables obfuscation and optimization. `confirm()` does nothing in the Tauri webview, so Remove and extension Uninstall
+use an inline confirm (no `confirm()` calls remain in the UI). The top bar sat under the status bar and camera cutout (`viewport-fit=cover` plus a safe-area top padding).
+
+Not verified / known gaps: Windows, Linux and iOS; mDNS across more than one Mac/phone pair (only tested here and on loopback); the local-network permission prompt on
+Android 17; a large library or large media over Wi-Fi (no throughput figures); the reader's "not downloaded" notice says "another paired device" rather than naming it;
+no UI to delete a term; media policy defaults on Android (video off, 500 MB cap) were not exercised on the phone.

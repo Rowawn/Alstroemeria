@@ -124,6 +124,55 @@ pub fn install(root: &Path, pkg: &Package) -> Result<()> {
     Ok(())
 }
 
+/// What `reconcile` decided: ids to install or upgrade (already written to disk) and ids removed.
+#[derive(Debug, Default)]
+pub struct Reconciled {
+    pub installed: Vec<String>,
+    pub removed: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Install the synced `extension_packages` whose `.alext` is on this device and that are missing or older here;
+/// uninstall the ones another device uninstalled (SPEC §9.6). `registry` is the state before this call. The user
+/// approved the permissions on the device that installed, so they count as approved.
+pub fn reconcile(
+    root: &Path,
+    registry: &crate::Registry,
+    live: &[alst_core::ExtPackageRow],
+    deleted: &[String],
+    media: &alst_core::media::MediaDir,
+) -> Reconciled {
+    let mut out = Reconciled::default();
+    for row in live {
+        let Some(path) = media.path(&row.media_hash).filter(|p| p.is_file()) else { continue };
+        let result = std::fs::read(&path).map_err(Error::from).and_then(|bytes| read_package(&bytes));
+        let pkg = match result {
+            Ok(p) if p.manifest.id == row.id => p,
+            Ok(_) => {
+                out.errors.push(format!("{}: package id does not match", row.id));
+                continue;
+            }
+            Err(e) => {
+                out.errors.push(format!("{}: {e}", row.id));
+                continue;
+            }
+        };
+        let newer = registry.get(&pkg.manifest.id).is_none_or(|e| e.manifest.semver() < pkg.manifest.semver());
+        if newer {
+            match install(root, &pkg) {
+                Ok(()) => out.installed.push(pkg.manifest.id.clone()),
+                Err(e) => out.errors.push(format!("{}: {e}", row.id)),
+            }
+        }
+    }
+    for id in deleted {
+        if registry.get(id).is_some_and(|e| e.source == crate::Source::Installed) && uninstall(root, id).is_ok() {
+            out.removed.push(id.clone());
+        }
+    }
+    out
+}
+
 pub fn uninstall(root: &Path, id: &str) -> Result<()> {
     if !is_safe_path(id) || id.contains('/') || id.starts_with('.') {
         return Err(Error::Invalid(format!("invalid extension id '{id}'")));
@@ -271,5 +320,28 @@ pub(crate) mod tests {
         uninstall(&root, "addon.pkg").unwrap();
         assert!(!root.join("addon.pkg").exists());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reconcile_installs_new_and_newer_packages_and_removes_deleted_ones() {
+        use alst_core::media::MediaDir;
+        let base = std::env::temp_dir().join(format!("alst-ext-rec-{}", alst_core::store::new_id()));
+        let (root, media) = (base.join("ext"), MediaDir::new(base.join("media")));
+        let manifest = manifest_json();
+        let bytes = zip_of(&[("extension.json", manifest.as_bytes()), ("main.js", b"//"), ("panel.html", b"<p>")]);
+        let (hash, _) = media.put_bytes(&bytes, 1 << 26).unwrap();
+        let row = alst_core::ExtPackageRow { id: "addon.pkg".into(), version: "1.0.0".into(), media_hash: hash };
+        let empty = crate::Registry::load(&crate::registry::BUNDLED, Some(&root));
+        let r = reconcile(&root, &empty, std::slice::from_ref(&row), &[], &media);
+        assert_eq!((r.installed.as_slice(), r.errors.len()), (&["addon.pkg".to_string()][..], 0));
+        let reg = crate::Registry::load(&crate::registry::BUNDLED, Some(&root));
+        assert!(reg.get("addon.pkg").is_some());
+        // Same version again: nothing to do. A row whose file hasn't arrived is skipped.
+        assert!(reconcile(&root, &reg, std::slice::from_ref(&row), &[], &media).installed.is_empty());
+        let missing = alst_core::ExtPackageRow { media_hash: "e".repeat(64), ..row.clone() };
+        assert!(reconcile(&root, &reg, &[missing], &[], &media).errors.is_empty());
+        let r = reconcile(&root, &reg, &[], &["addon.pkg".to_string()], &media);
+        assert_eq!(r.removed, vec!["addon.pkg".to_string()]);
+        assert!(!root.join("addon.pkg").exists());
     }
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { sync } from "./sync.svelte";
   import { api, type Language, type PartInfo, type Work } from "./api";
   import MediaImport from "./MediaImport.svelte";
   import Podcast from "./Podcast.svelte";
@@ -51,6 +52,15 @@
       busy = false;
     }
   }
+
+  let seenTick = sync.tick;
+  $effect(() => {
+    const t = sync.tick;
+    if (t !== seenTick) {
+      seenTick = t;
+      void refresh();
+    }
+  });
 
   onMount(() => {
     refresh();

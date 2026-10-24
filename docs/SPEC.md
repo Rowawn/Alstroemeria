@@ -694,13 +694,15 @@ batch (remote sites). It is never derived from `_changes`, because superseded en
 | `vector()` | `local_sync_clock` as a map site → hlc |
 | `changes_since(vector, max_rows)` | `_changes` entries with `hlc > vector[site]` (missing site = 0), ordered by `(hlc, site_id, tbl, row_id, col)`. A batch never splits entries that share one `(site_id, hlc)`; it may exceed `max_rows` to finish that group. |
 | `events_since(vector, max_rows)` | same rule for `events` |
+| `next_batch(cursor, max_rows)` | what a session sends: `changes_since` and `events_since` cut at the **same** `(hlc, site)` key (the earlier of the two streams' last keys), so a peer that has applied a batch has everything at or below that key from both streams. Sending the streams separately would let the vector skip an event whose change batch arrived first. The cursor advances by what was sent. |
 | `apply(batch)` | one transaction: for each entry, upsert into `_changes` if `(hlc, site)` beats the stored one; insert events whose id is new; advance `local_sync_clock`; `hlc.recv(max hlc)`; then **materialize** every touched row (below). Returns the set of touched tables. |
 
 **Materialize:** `_changes` is the source of truth; tables are rebuilt from it. For a touched row: if it
 exists, `UPDATE` the columns whose winning value changed; if not, `INSERT` it when every `NOT NULL`
 column without a default has an entry, otherwise add it to `local_sync_pending` and retry at the end of
-every later `apply`. Use `PRAGMA defer_foreign_keys = ON` inside the transaction so parents and children
-can arrive in any order. Unknown tables or columns are an error (schema versions already match, §9.5).
+every later `apply`. Foreign keys are switched off for the duration of `apply` (not just deferred): a link may arrive in an
+earlier batch than a term whose columns were last edited later, so a deferred check could fail at commit.
+References converge by the end of a session. Unknown tables or columns are an error (schema versions already match, §9.5).
 
 ### 9.3 Transport and pairing
 
@@ -732,10 +734,13 @@ can arrive in any order. Unknown tables or columns are an error (schema versions
 
 One connection syncs both directions. Either side may start it.
 
+One direction at a time (the initiator sends first, then the responder; each batch is acked), so neither
+side can block on a full pipe. `hlc_now` is the later of the device's HLC and its wall clock.
+
 1. Both send `hello {protocol: 1, site_id, name, schema_version, hlc_now, vector}`.
    Refuse (and tell the user which device to update) if `schema_version` differs. Refuse if
    `|hlc_now − own clock|` is over one hour ("the clock on <device> is off").
-2. Each side streams `changes_since(peer_vector)` and `events_since(peer_vector)` batches (≈ 500 rows);
+2. Each side streams `next_batch` batches (changes and events together, ≈ 500 rows each);
    the receiver `apply`s each batch and acks it. An interrupted session loses at most the unacked batch;
    the next session resumes from the vector.
 3. Each side sends `done`. The UI gets `sync://applied {tables}` and refreshes what it shows.

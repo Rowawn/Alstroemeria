@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { sync } from "./sync.svelte";
   import { api, type Language } from "./api";
   import { extHost } from "./ext";
   import { extState } from "./ext/store.svelte";
@@ -16,6 +17,7 @@
   let draft = $state<Record<string, unknown>>({});
   let pending = $state<{ file: File; info: PackageInfo } | null>(null);
   let busy = $state(false);
+  let uninstalling = $state("");
 
   async function refresh() {
     try {
@@ -26,6 +28,15 @@
       error = String(e);
     }
   }
+
+  let seenTick = sync.tick;
+  $effect(() => {
+    const t = sync.tick;
+    if (t !== seenTick) {
+      seenTick = t;
+      void refresh();
+    }
+  });
 
   onMount(refresh);
   $effect(() => {
@@ -93,7 +104,7 @@
   }
 
   async function uninstall(e: ExtInfo) {
-    if (!confirm(`Uninstall ${e.name}? Its settings are kept in case you reinstall it.`)) return;
+    uninstalling = "";
     await act(async () => {
       await api.uninstallExtension(e.id);
       extHost.terminate(e.id);
@@ -251,7 +262,15 @@
         <button onclick={() => (extHost.clearError(e.id), refresh())}>Retry</button>
       {/if}
       {#if schemaOf(e).length}<button onclick={() => openSettings(e)}>Settings</button>{/if}
-      {#if e.source === "installed"}<button onclick={() => uninstall(e)}>Uninstall</button>{/if}
+      {#if e.source === "installed"}
+        {#if uninstalling === e.id}
+          <span class="muted">Uninstall {e.name}? Its settings are kept in case you reinstall it.</span>
+          <button onclick={() => uninstall(e)}>Uninstall</button>
+          <button onclick={() => (uninstalling = "")}>Cancel</button>
+        {:else}
+          <button onclick={() => (uninstalling = e.id)}>Uninstall</button>
+        {/if}
+      {/if}
     </div>
     {#if e.kind !== "language" && !e.targets.includes("*") ? e.targets.length > 1 : e.kind !== "language"}
       <div class="row small">

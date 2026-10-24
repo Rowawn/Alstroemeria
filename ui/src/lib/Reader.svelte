@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { sync, syncApi } from "./sync.svelte";
   import { api, mediaUrl, type Language, type PartView, type TermView, type Unit } from "./api";
   import { clock, cueAt, groupUnits, repeatTarget } from "./cues";
   import { extHost, readerBridge } from "./ext";
@@ -159,6 +160,30 @@
       return;
     }
     void runExtensions();
+  }
+
+  // Synced changes (new terms from another device, a file that finished downloading) reload the part.
+  let seenTick = sync.tick;
+  $effect(() => {
+    const t = sync.tick;
+    if (t !== seenTick) {
+      seenTick = t;
+      void load();
+    }
+  });
+  let downloading = $state(false);
+  let downloadError = $state("");
+  async function downloadNow(hash: string) {
+    downloading = true;
+    downloadError = "";
+    try {
+      if (await syncApi.downloadMedia(hash)) await load();
+      else downloadError = "No paired device that has this file is reachable right now.";
+    } catch (e) {
+      downloadError = String(e);
+    } finally {
+      downloading = false;
+    }
   }
 
   async function runExtensions() {
@@ -343,7 +368,11 @@
       {#if view.media}
         <div class="player">
           {#if !view.media.present}
-            <p class="error">This device doesn't have the media file for this part.</p>
+            <p class="error">
+              This file is on another paired device and hasn't been downloaded here.
+              <button disabled={downloading} onclick={() => downloadNow(view!.media!.hash)}>{downloading ? "Downloading…" : "Download now"}</button>
+            </p>
+            {#if downloadError}<p class="error">{downloadError}</p>{/if}
           {:else}
             {#if view.media.video}
               <!-- svelte-ignore a11y_media_has_caption -->

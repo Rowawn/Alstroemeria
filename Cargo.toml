@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/alst-core", "crates/alst-text", "crates/alst-dict", "crates/alst-ext", "src-tauri"]
+members = ["crates/alst-core", "crates/alst-text", "crates/alst-dict", "crates/alst-ext", "crates/alst-sync", "src-tauri"]
 
 [profile.release]
 codegen-units = 1

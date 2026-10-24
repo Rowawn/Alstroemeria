@@ -10,16 +10,17 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 mod ext;
 mod media;
+mod sync;
 
 pub(crate) struct AppState {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     db_path: PathBuf,
     /// App data folder (`ALST_DATA_DIR` overrides it, for tests and the self-test).
     data_dir: PathBuf,
@@ -34,6 +35,8 @@ pub(crate) struct AppState {
     deinflectors: RwLock<HashMap<String, alst_text::deinflect::Deinflector>>,
     /// SQLite rowid of the last event forwarded to the UI.
     event_cursor: AtomicI64,
+    /// LAN sync (SPEC §9); `None` until the service has started, or if it couldn't.
+    sync: OnceLock<Arc<sync::SyncCtx>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -402,14 +405,23 @@ async fn import_dictionary(state: State<'_, AppState>, request: Request<'_>) -> 
     let language = header(&request, "x-language")?;
     state.lang(&language)?;
     let bytes = raw_body(&request)?.into_owned();
-    let path = state.db_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let (path, store, media) = (state.db_path.clone(), state.store.clone(), state.media.clone());
+    let info = tauri::async_runtime::spawn_blocking(move || -> Res<DictInfo> {
         let mut conn = alst_core::db::open(&path).map_err(err)?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        alst_dict::import(&mut conn, &bytes, &language, now).map_err(err)
+        let mut info = alst_dict::import(&mut conn, &bytes, &language, now).map_err(err)?;
+        // Keep the archive and record it as a synced row so other devices can import it too (SPEC §9.6).
+        let (hash, size) = media.put_bytes(&bytes, 512 << 20).map_err(err)?;
+        let mut s = store.lock().map_err(err)?;
+        s.register_media(&hash, "application/zip", size as i64, Some(&format!("{}.zip", info.title))).map_err(err)?;
+        s.put_dictionary(&hash, &info.title, info.revision.as_deref(), &language).map_err(err)?;
+        alst_dict::set_source(&conn, info.id, &hash).map_err(err)?;
+        info.source_id = Some(hash);
+        Ok(info)
     })
     .await
-    .map_err(err)?
+    .map_err(err)??;
+    Ok(info)
 }
 
 #[tauri::command]
@@ -419,7 +431,11 @@ fn list_dictionaries(state: State<AppState>) -> Res<Vec<DictInfo>> {
 
 #[tauri::command]
 fn delete_dictionary(state: State<AppState>, id: i64) -> Res<()> {
-    alst_dict::delete(state.store()?.local_conn(), id).map_err(err)
+    let mut store = state.store()?;
+    if let Some(source) = alst_dict::source_of(store.local_conn(), id).map_err(err)? {
+        store.delete_dictionary(&source).map_err(err)?;
+    }
+    alst_dict::delete(store.local_conn(), id).map_err(err)
 }
 
 #[tauri::command]
@@ -551,8 +567,11 @@ fn selftest_canary_hits() -> u32 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // QR pairing scans with the camera (SPEC §9.3); phones only.
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    builder
         .register_uri_scheme_protocol("alstext", ext::serve)
         .register_uri_scheme_protocol("alstmedia", media::serve)
         .setup(|app| {
@@ -571,7 +590,7 @@ pub fn run() {
             media.clear_tmp();
             app.manage(AppState {
                 media,
-                store: Mutex::new(store),
+                store: Arc::new(Mutex::new(store)),
                 db_path,
                 data_dir: dir,
                 registry: RwLock::new(registry),
@@ -579,7 +598,9 @@ pub fn run() {
                 languages: RwLock::new(languages),
                 deinflectors: RwLock::new(deinflectors),
                 event_cursor,
+                sync: OnceLock::new(),
             });
+            sync::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -610,6 +631,18 @@ pub fn run() {
             dict_meta,
             open_url,
             export_tsv,
+            sync::sync_overview,
+            sync::set_device_name,
+            sync::pair_start,
+            sync::pair_stop,
+            sync::pair_by_code,
+            sync::pair_by_qr,
+            sync::pair_answer,
+            sync::sync_now,
+            sync::unpair,
+            sync::set_media_policy,
+            sync::set_peer_addr,
+            sync::download_media,
             save_export,
             ext::list_extensions,
             ext::resolve_extensions,

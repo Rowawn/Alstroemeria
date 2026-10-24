@@ -39,6 +39,11 @@ impl Hlc {
         self.tick(now_ms)
     }
 
+    /// Note a timestamp seen from another device, so later local stamps are greater.
+    pub fn observe(&mut self, remote: u64) {
+        self.last = self.last.max(remote);
+    }
+
     pub fn last(&self) -> u64 {
         self.last
     }

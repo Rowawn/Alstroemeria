@@ -3,9 +3,11 @@
 pub mod db;
 pub mod hlc;
 pub mod media;
+mod rekey;
 pub mod store;
+pub mod sync;
 
-pub use store::{EventRow, ExtStateRow, MediaRow, NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
+pub use store::{DictionaryRow, EventRow, ExtPackageRow, ExtStateRow, MediaRow, NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

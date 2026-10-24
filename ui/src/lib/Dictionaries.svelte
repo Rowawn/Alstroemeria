@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { sync } from "./sync.svelte";
   import { api, type DictInfo, type Language } from "./api";
 
   let { languages }: { languages: Language[] } = $props();
@@ -29,6 +30,15 @@
     }
   }
 
+  let seenTick = sync.tick;
+  $effect(() => {
+    const t = sync.tick;
+    if (t !== seenTick) {
+      seenTick = t;
+      void refresh();
+    }
+  });
+
   onMount(refresh);
 </script>
 
@@ -56,6 +66,9 @@
           <strong>{d.title}</strong>
         </label>
         <span class="muted">{d.language} · {d.entryCount.toLocaleString()} entries{#if d.metaCount} · {d.metaCount.toLocaleString()} frequency/pitch rows{/if}</span>
+        {#if !d.sourceId && sync.overview && sync.overview.peers.length > 0}
+          <span class="muted" title="This dictionary was imported before sync existed">Re-import to share with other devices</span>
+        {/if}
         {#if !d.rulesImported && languages.find((l) => l.id === d.language)?.scanLookup}
           <span class="warn" title="This dictionary was imported before conjugation rules were stored">Re-import to enable conjugation lookup</span>
         {/if}
