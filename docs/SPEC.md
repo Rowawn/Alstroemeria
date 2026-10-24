@@ -163,6 +163,9 @@ Languages without spaces (ja, zh) match on token sequences in the same way.
 Results are cached in `local_token_cache`, keyed by part + a fingerprint of the active
 extensions, so changing extensions invalidates the cache.
 
+Morphological languages (Japanese, Korean) group morphemes into word tokens and key terms by
+lemma: see §16.
+
 ### 5.4 Rendering
 The reader renders each token as a span carrying status and annotation-driven **render
 hints** (§6.5). Extensions never get direct DOM access to the reader.
@@ -752,3 +755,150 @@ Crates are created when their milestone starts, not before.
 
 1. Final product name (Alstroemeria is the working name).
 2. Whether to import Lute's database directly or only its CSV term export (CSV is simpler).
+
+## 16. Japanese and Korean (M5)
+
+This section adds morphological languages. It extends §5 (tokens), §6.9 (extension points) and §7 (lookup).
+
+### 16.1 Engine and dictionaries
+- Core engine `lindera` in `alst-text` (pure Rust; builds for every target incl. Android/iOS).
+  Japanese uses **IPADIC** (smaller than UniDic, gives base form + katakana reading;
+  permissive licence). Korean uses **ko-dic** (Apache-2.0). Attribution goes in About.
+- Dictionaries are **embedded at compile time behind cargo features** `lang-ja` and `lang-ko`
+  (on by default). This is the simplest path that works offline on every platform.
+  Record the installer/APK size increase in the roadmap; if the installer exceeds ~60 MB,
+  M7 moves dictionaries to downloadable "language data" (pinned URL + sha256, or import from file).
+- The build session confirms the current Lindera API and dictionary crates and pins versions.
+
+### 16.2 Word grouping (what a reader "word" is)
+Morphological analysers split text finer than a learner thinks (`食べ|させ|られ|た`).
+The engine therefore **groups morphemes into word tokens**. A grouped token is one `Token`:
+`text` = joined surfaces, `lemma` = dictionary form, `ann["<lang>.morphemes"]` =
+`[{ surface, base, pos, reading? }]`, `ann["<lang>.pos"]` = the head's universal role (§16.4),
+`ann["ja.reading"]` = joined reading in hiragana (Japanese only).
+
+**Japanese (IPADIC POS):**
+- A group starts at a head: `動詞-自立`, `形容詞-自立`, or `名詞-サ変接続` immediately followed by
+  a form of する (lemma = noun + する).
+- It absorbs following morphemes while they are: `助動詞`; `動詞-接尾`; `動詞-非自立`
+  (いる, しまう, おく, いく, くる, ある, みる after て/で); `助詞-接続助詞` て/で/ば/たり;
+  `名詞-接尾-助動詞語幹` (そう); `形容詞-非自立`/`形容詞-接尾`.
+- Everything else (particles, nouns, symbols) is its own token. Max 8 morphemes per group.
+- Readings: katakana → hiragana. Words without a dictionary reading get none.
+
+**Korean (ko-dic / Sejong POS):** groups never cross whitespace (eojeol boundary).
+- Heads: `VV`, `VA`, `VX`, `VCP`, `VCN`, `XR`, and `NNG`/`XR` followed by `XSV`/`XSA` (lemma = root + 하다 etc.).
+- Absorbs: `EP`, `EF`, `EC`, `ETN`, `ETM`, `XSV`, `XSA`, and noun + `XSN` (들; lemma = the noun).
+- Particles (`J*`) are separate tokens, so `학교에` → `학교` + `에`, and `학생이에요` → `학생` + `이에요` (lemma 이다).
+- Contracted morphemes (e.g. `했` = `하/VV+았/EP`) are expanded using ko-dic's expression field;
+  verbal lemma = stem + 다 (`먹었습니다`→먹다, `공부했어요`→공부하다, `예뻐요`→예쁘다, `갔다`→가다).
+  Genuinely ambiguous stems (들었다: 듣다/들다) take the analyser's choice.
+
+### 16.3 Term keys
+Language manifests gain `"termKey": "surface" | "lemma"` (default `surface`). `ja` and `ko` use
+`lemma`: the unit's key is the normalized lemma, so 食べた, 食べない and 食べさせられた all show
+and update the status of the term 食べる. The term editor shows the lemma as the term and the
+surface as "seen as". Multi-word matching (§5.3) runs over the same keys. `es` is unchanged.
+
+### 16.4 Universal POS roles
+Languages that provide `<lang>.pos` map their tags onto the render roles:
+`noun`, `name` (proper nouns), `verb`, `adjective` (incl. ja 形容動詞語幹 and ko VA),
+`adverb`, `particle` (ja 助詞, ko J*), `function` (auxiliaries, conjunctions, endings, symbols).
+
+### 16.5 Deinflection (lookup scanning)
+Used by the lookup popup to find dictionary forms of any span the user clicks or selects, including
+spans the tokenizer grouped differently. Written from scratch; **no Yomitan code or rule files**
+(GPL-3.0), only our own grammar tables.
+
+- **Engine:** `alst-text::deinflect`, generic and data-driven. A language provides
+  `deinflect.json` (path in its manifest: `"deinflection": "deinflect.json"`).
+- **Rule format:** each rule is
+  `{ "suffixIn": "かった", "suffixOut": "い", "condIn": ["past"], "condOut": ["adj-i"], "reason": "past" }`
+  read as: a word ending in `suffixIn` whose current conditions intersect `condIn` can be rewritten
+  to end in `suffixOut`, now with conditions `condOut`, adding `reason`.
+  Condition names: `v1` (ichidan), `v5` (godan, any row), `vk` (来る), `vs` (する), `adj-i`,
+  plus intermediate forms (`past`, `te`, `masu`, `neg`, `tai`, …) for chaining. The surface starts
+  with all conditions allowed.
+- **Algorithm:** breadth-first from the surface; apply every matching rule; depth ≤ 10;
+  dedupe on (text, conditions). Output: candidates `{ text, conditions, reasons[] }`.
+- **Validation against dictionaries:** a candidate counts only if a dictionary entry with that
+  headword or reading exists and its Yomitan `rules` field (`v1`, `v5`, `vs`, `vk`, `adj-i`, …)
+  intersects the candidate's final conditions (candidates with no rules applied always count).
+  This needs a new `rules` column in `local_dict_entries` (new migration; existing dictionaries
+  are re-imported on next launch or show "re-import to enable conjugation lookup").
+- **Japanese rule coverage (required, each with a test):**
+
+| Surface | Lemma | Reasons |
+|---|---|---|
+| 食べた / 食べない / 食べなかった | 食べる | past / negative / negative, past |
+| 食べて / 食べている / 食べてる | 食べる | te / te, progressive / te, progressive |
+| 食べられる / 食べさせる / 食べさせられた | 食べる | passive-potential / causative / causative, passive, past |
+| 食べます / 食べませんでした | 食べる | polite / polite, negative, past |
+| 食べたい / 食べたくない | 食べる | desire / desire, negative |
+| 食べよう / 食べれば / 食べたら / 食べろ | 食べる | volitional / ba-conditional / tara-conditional / imperative |
+| 書いた / 書かない / 書ける / 書かれる | 書く | past / negative / potential / passive |
+| 泳いだ, 話した, 待った, 買った, 帰った, 死んだ, 遊んだ, 読んだ | 泳ぐ, 話す, 待つ, 買う, 帰る, 死ぬ, 遊ぶ, 読む | past |
+| 行った / 行って | 行く | past / te (irregular) |
+| した / しない / させる / される | する | past / negative / causative / passive |
+| 勉強した | 勉強する (and 勉強 if tagged `vs`) | past |
+| 来た / 来ない / きた / こない | 来る / くる | past / negative |
+| 高かった / 高くない / 高くて / 高ければ / 高そう / 高さ | 高い | past / negative / te / ba-conditional / appearance / noun (-sa) |
+| よかった | 良い / いい | past (irregular) |
+| 読まされていた | 読む | causative (short), passive, te, progressive, past |
+| 食べなきゃ | 食べる | negative, conditional (colloquial) |
+
+  Plus negatives: 帰る must not deinflect to 帰 + る as ichidan when only the godan entry exists
+  (dictionary validation handles it); 見る must not produce 見 alone.
+- Korean needs no rule file in M5: lookups use the tokenizer's lemma.
+
+### 16.6 Lookup flow
+New core command `lookup_scan(language, text, maxLen = 20)` (the text from the clicked position to
+the end of the sentence):
+for each prefix from longest to shortest → candidates = prefix, its kana-normalized form, and its
+deinflections → query entries by headword **or** reading → validate (§16.5). Stop after the longest
+prefix with results plus up to 2 shorter ones. Results carry `{ matched, lemma, reading, reasons[], entries }`,
+sorted by match length, then frequency (§16.7), then dictionary order.
+Languages without a deinflection file keep the M2 behaviour (lookup by key and lemma).
+Queries normalize katakana ↔ hiragana for the reading index.
+
+### 16.7 Dictionary meta banks
+Import Yomitan `term_meta_bank_*` into a new local table
+`local_dict_meta(dict_id, term, reading, mode, data json)` with modes `freq` and `pitch`
+(pitch data: `{ reading, pitches: [{ position, nasal?, devoice? }] }`). Kanji banks stay ignored.
+Host API addition (permission `dict:read`): `alst.dict.meta(language, { term, reading?, mode })`.
+Pitch data is user-imported (e.g. the Kanjium pitch dictionary, CC BY-SA 4.0); nothing is bundled.
+
+### 16.8 Extension point: lookupProvider (implemented in M5)
+`contributes.lookupProviders: [{ id, title }]`; the module exports
+`lookup(input) → LookupSection[]` with a 2 s timeout, called when the term editor opens.
+
+```ts
+input: { language, unit: { text, key, lemma?, status }, tokens: Token[], sentence: string }
+type LookupSection = { title: string; items: LookupItem[] };
+type LookupItem =
+  | { kind: "text"; text: string; role?: Role }
+  | { kind: "kv"; label: string; text: string }
+  | { kind: "pitch"; reading: string; downstep: number }   // drawn by the core as a pitch graph
+  | { kind: "link"; label: string; url: string };          // https only, opens the system browser
+```
+Plain text only (no HTML). Sections render under the dictionary results in decorator order.
+
+### 16.9 Render-hint additions
+- `ruby` gains a segmented form: `{ kind: "ruby", segments: [{ base, rt? }] }`. The bases must
+  concatenate to the unit text, otherwise the hint is ignored. This lets furigana sit over kanji only.
+- New roles: `accent-heiban`, `accent-atamadaka`, `accent-nakadaka`, `accent-odaka` (light + dark).
+- `pitchLine` stays reserved (pitch is shown by colour, badge and the popup graph).
+- Reader CSS for CJK: no inter-word spaces are added; `line-break: strict`.
+
+### 16.10 First-party extensions in M5 (MIT)
+| Extension | Kind / runtime | Requires → provides | What it does |
+|---|---|---|---|
+| `lang-ja` | language, declarative | → `ja.tokenize`, `ja.lemma`, `ja.reading`, `ja.pos`, `ja.morphemes` | Lindera IPADIC, `termKey: lemma`, `deinflect.json`, sentence ends `。！？`, lookup URL (Jisho) |
+| `lang-ko` | language, declarative | → `ko.tokenize`, `ko.lemma`, `ko.pos`, `ko.morphemes` | Lindera ko-dic, `termKey: lemma`, lookup URLs (Naver, Wiktionary) |
+| `ja-furigana` | addon, JS decorator | `ja.reading` | Segmented ruby over kanji (okurigana aligned). Setting: show for all / unknown (status 0–1) / learning (0–3) / none; default unknown |
+| `ja-pitch` | addon, JS annotator + decorator + lookupProvider; `dict:read` | `ja.reading` → `ja.pitch` | Pitch from imported meta banks; colours the word by pattern (heiban/atamadaka/nakadaka/odaka) or shows the downstep as a badge (setting); popup pitch graph; tells the user to import a pitch dictionary if none |
+| `ko-hanja` | addon, JS lookupProvider + decorator | `ko.lemma` → `ko.hanja` | Hanja for Sino-Korean words, with per-character meanings in the popup; optional hanja ruby (off by default). Data: a TSV `word\thanja\tmeaning`. Bundle a dataset only if its licence is MIT/BSD/Apache/CC0/CC-BY (check libhangul's `hanja.txt` licence); otherwise ship without data and let the user import a TSV |
+| `addon-grammar-colors` | addon, JS decorator; targets `*` | `*.pos` | Colours words by role; settings choose which roles. Disabled for `es` with "missing es.pos" — the capability system working as intended |
+
+Mora counting for pitch: each kana is one mora except small ゃゅょぁぃぅぇぉ (attach to the previous);
+ー, っ and ん count. Pattern: downstep 0 → heiban; 1 → atamadaka; = mora count → odaka; else nakadaka.

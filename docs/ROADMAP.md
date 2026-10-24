@@ -10,7 +10,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 2 | **Reader MVP** ✅ (see status below) | Sonnet (Opus for term matching) | Import text/EPUB/URL; `lang.es` declarative extension; reader with token statuses; term editor popup; Yomitan dictionary import + URL lookups; TSV export for Anki |
 | 3 | **Extension host** | Opus design ✅, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** ✅ (see status below) | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
-| 5 | **CJK languages** | Sonnet (Opus for deinflection) | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
+| 5 | **CJK languages** | Opus design ✅, Sonnet build | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
 | 6 | **LAN sync** | Opus | Pairing by QR, convergence property tests pass, media sync policy |
 | 7 | **Releases** | Sonnet | Signed installers for Windows/macOS/Linux, Android APK/AAB, updater |
 | 8 | **Content packs** | Sonnet | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
@@ -203,3 +203,32 @@ podcast feeds from real servers (only a local feed was used); YouTube videos wit
 Known gaps: media files are not removed when a work is deleted (there is no delete yet); no waveform/A-B loop; a multi-word term
 spanning two cues renders in the first cue; `ALST_DATA_DIR`-less Android `adb` setup: use `npm run tauri android dev` (a plain debug APK
 loads the Vite URL and can't reach IPC). Next: M5.
+
+## M5 — Japanese and Korean (build plan)
+
+Design: SPEC §16 (read fully), plus §6.9.6–6.9.7 for the extension contracts. Steps, each ending with tests passing:
+
+1. **Engine:** add Lindera (IPADIC, ko-dic) to `alst-text` behind features `lang-ja`/`lang-ko`; pin versions.
+   Word grouping (§16.2) with golden tests in `tests/fixtures/ja/` and `tests/fixtures/ko/` covering every
+   example in §16.2 plus a paragraph of real prose per language. `termKey` (§16.3) in the language definition
+   and matcher. Measure tokenizing time for a 5,000-character part on desktop; if over 100 ms on the Android
+   emulator, implement `local_token_cache` (§5.3).
+2. **Deinflection:** `alst-text::deinflect` engine + `extensions/lang-ja/deinflect.json` written from scratch.
+   One test per row of the §16.5 table plus the negative cases.
+3. **Dictionaries:** migration adding `local_dict_entries.rules` and `local_dict_meta`; import `rules` and the
+   `freq`/`pitch` meta banks; `lookup_scan` (§16.6) with tests on a small fixture Yomitan dictionary
+   (hand-made, a dozen entries, no copied JMdict data).
+4. **Languages:** `extensions/lang-ja`, `extensions/lang-ko` manifests; registry support for `termKey`,
+   `deinflection` and the new engine; term editor shows lemma + "seen as"; popup uses `lookup_scan`.
+5. **Extension host additions:** `lookupProvider` (§16.8), `alst.dict.meta`, segmented ruby and the new
+   accent roles (§16.9), CJK reader CSS. Update `sdk/alstroemeria.d.ts` and `schemas/extension.schema.json`.
+   Vitest for segmented-ruby validation and lookup-provider timeouts.
+6. **Add-ons:** `ja-furigana` (alignment unit tests: 食べる, 召し上がる, 取り扱い, お茶, 日本語, 行って),
+   `ja-pitch` (mora count + pattern tests), `ko-hanja` (check data licence first; record the decision),
+   `addon-grammar-colors`.
+7. **Verify:** desktop and Android emulator: a Japanese article shows grouped words, furigana on unknown words,
+   grammar colours, conjugated-verb lookup with reasons, and pitch colours after importing a pitch dictionary;
+   a Korean article shows particles split from nouns, verb lemmas, and the hanja popup. Record the installer/APK
+   size change from the embedded dictionaries.
+
+Out of scope: Chinese, UniDic, pitchLine drawing over text, Korean deinflection rules, downloadable language data (M7 if needed).
