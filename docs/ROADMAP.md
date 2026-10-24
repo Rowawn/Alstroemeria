@@ -11,7 +11,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 3 | **Extension host** | Opus design ✅, Sonnet build | Worker runtime, host API v1, decorators/panels/commands; capability graph; one example add-on (e.g. language-universal "unknown-word density" panel) |
 | 4 | **Media** ✅ (see status below) | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Opus design ✅, Sonnet build | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
-| 6 | **LAN sync** | Opus | Pairing by QR, convergence property tests pass, media sync policy |
+| 6 | **LAN sync** | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
 | 7 | **Releases** | Sonnet | Signed installers for Windows/macOS/Linux, Android APK/AAB, updater |
 | 8 | **Content packs** | Sonnet | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
 | 9 | **SRS module** | Opus design, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
@@ -279,3 +279,35 @@ candidates, best first); `ko.hanja` data provenance (BSD header only, see §16.1
 beyond the table; multi-word terms in ja are keyed by lemmas joined with a space, so terms saved before M5 in other languages are unaffected but ja has no migration (none existed).
 `adb root` drops the `adb reverse` for `tauri android dev`; run `adb reverse tcp:1420 tcp:1420` again.
 
+## M6 — LAN sync (build plan)
+
+Design: SPEC §9 (read fully) and §4.1–4.4. Steps, each ending with tests passing:
+
+1. **Store:** derived ids (§9.1) for new rows, including reviving tombstones; the one-time re-key step with
+   tests (references, `_changes`, events, the deleted-plus-recreated collision); migration `0005_sync.sql`;
+   `local_sync_clock` kept on every local write.
+2. **Sync core:** `vector`, `changes_since`, `events_since`, `apply` with materialize and
+   `local_sync_pending` (§9.2). New crate `crates/alst-sync` with the session state machine (§9.4) over a
+   `Transport` trait. Property tests with `proptest` and an in-memory transport (§9.5), including
+   sessions cut off mid-batch and batches ending inside a `(site, hlc)` group.
+3. **Transport and pairing:** Noise over TCP with `snow` (§9.3), framing, device key pair, listener,
+   pinned peers; code pairing (XX plus a 6-digit code) and QR pairing (`XXpsk3`). Loopback tests for: a
+   pinned peer syncs, an unknown key is refused, a wrong PSK fails, codes match on both ends.
+4. **Discovery:** `mdns-sd` advertise and browse, remembered addresses, manual address entry; Android
+   multicast lock and permission in the Android shell.
+5. **Assets:** media `have`/`want` with chunked transfer, sha256 check and per-peer policy; on-demand
+   "Download now"; dictionary archives stored on import plus the `dictionaries` table and background
+   re-import on peers; `.alext` stored on install plus `extension_packages` and install on peers (§9.6).
+6. **UI:** Settings → Devices, pairing screens (code; QR shown with the `qrcode` crate as SVG, scanned with
+   the Tauri barcode-scanner plugin on Android), top-bar sync indicator, sync triggers (§9.4), reader and
+   lists refresh on `sync://applied`.
+7. **Verify:** the macOS release app and the user's Android phone (Galaxy, arm64, connected over USB for
+   `adb install`) on the same Wi-Fi: pair by code and by QR; edit terms on both offline, then sync, and
+   both edits survive; import a podcast episode on the Mac and see it play on the phone; import a
+   dictionary on the Mac and look a word up on the phone. Record timings for a first full sync.
+
+Phone test builds: `npm run tauri android build -- --apk --target aarch64` (rustup Rust must come first
+on `PATH`), then `zipalign -P 16 4` and `apksigner sign` with `~/.android/debug.keystore` (the standard
+debug-key password), then `adb install -r`. Always sign with that same key, so installs keep the user's data.
+
+Out of scope: see the end of SPEC §9.

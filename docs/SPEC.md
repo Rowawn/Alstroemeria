@@ -71,7 +71,8 @@ Rules:
 
 ### 4.1 Conventions
 
-- IDs: UUIDv7 strings (time-ordered, globally unique across devices).
+- IDs: UUIDv7 strings (time-ordered, globally unique across devices). Rows with a natural key use a
+  derived id instead, so devices agree on it (§9.1).
 - Every **synced table** has: `id TEXT PRIMARY KEY`, `created_at INTEGER` (unix ms),
   `deleted INTEGER NOT NULL DEFAULT 0` (tombstone; rows are never hard-deleted while sync exists).
   Per-column clocks live in `_changes` (§4.4), not on the row.
@@ -98,9 +99,13 @@ media          id(=sha256), mime, size, original_name -- file stored at media/<a
 extension_state id(=extension id), enabled, settings(json), languages(json)
 ext_data       id, extension_id, key, value(json)    -- per-extension synced key/value store
 settings       id(=key), value(json)                 -- synced user settings
+dictionaries   id, title, revision, language, media_hash, enabled   -- source archives (§9.6, M6)
+extension_packages id(=extension id), version, media_hash           -- installed .alext (§9.6, M6)
 events         see §4.3 (append-only, synced as a union)
 local_settings key, value                            -- device-only settings      (local)
-local_peers    site_id, name, cert_fingerprint, last_seen, last_vector(json)   (local)
+local_peers    site_id, name, cert_fingerprint (unused), public_key, addr, port,
+               media_policy(json), paired_at, last_seen, last_vector(json)   (local)
+local_sync_clock, local_sync_pending  -- sync bookkeeping (§9.2)                (local)
 local_dict_*   imported dictionary entries/indexes   (local; large, rebuilt per device)
 local_token_cache part_id, ext_fingerprint, tokens(blob)                       (local)
 ```
@@ -630,19 +635,156 @@ turned off) are provided. Leaving or finishing a part logs `media.listen` (§4.3
 
 ## 9. LAN sync (M6)
 
-- **Discovery:** mDNS service `_alstroemeria._tcp`.
-- **Pairing:** device A shows a QR code (or six-digit code) encoding
-  `{site_id, name, addr, port, cert_fingerprint, one_time_secret}`. B connects, both pin each
-  other's self-signed certificate fingerprints (`local_peers`). From then on, only pinned peers.
-- **Transport:** WebSocket over TLS (rustls).
-- **Protocol:**
-  1. `hello {site_id, schema_version, vector}`. `vector` maps site_id → highest HLC seen from that site.
-  2. Each side sends `_changes` rows newer than the peer's vector, in batches.
-  3. The receiver applies each column change if `(hlc, site)` is newer than its own clock.
-  4. `events` merge as a set union by id.
-  5. Media: exchange `have/want` lists of hashes; transfer lazily, filtered by a per-device
-     policy (e.g. "phone: no video").
-- **Schema version mismatch:** refuse to sync and tell the user which device to update.
+Paired devices on the same network exchange changes directly. There is no server and no account.
+All devices that a user pairs are trusted equally; pairing is the only security decision.
+
+Code layout: `crates/alst-sync` (new, pure Rust, no Tauri) owns discovery, transport, pairing and the
+protocol. Everything that reads or writes synced tables stays in `alst-core::store` (§4.1); `alst-sync`
+calls the store API below and never runs SQL on synced tables itself. `src-tauri` only starts the
+service, forwards UI commands and emits events.
+
+### 9.1 Identity of rows (deterministic ids)
+
+Rows that have a natural key get an id derived from it, so two devices that create "the same" row
+offline produce the same id and merge column by column instead of duplicating:
+
+| table | id derived from |
+|---|---|
+| `terms` | `language`, `text_lc` |
+| `concepts` | `language`, `kind`, `key` |
+| `term_parents` | `term_id`, `parent_id` |
+| `ext_data` | `extension_id`, `key` |
+| `settings`, `extension_state`, `extension_packages` | already the natural key |
+| `media` | already the sha256 |
+| `dictionaries` | sha256 of the archive (the `media_hash`) |
+
+Derived id = UUIDv8 built from the first 16 bytes of `sha256(table || 0x00 || k1 || 0x00 || k2 …)`,
+formatted like other UUIDs. `works`, `parts` and `events` keep random UUIDv7 ids: two imports of the same
+article are two works (the user can delete one).
+
+Creating a row whose derived id exists as a tombstone revives it: `deleted` is set to 0 and the new
+column values are written with fresh clocks.
+
+**Re-key step (one-time, Rust, runs before any sync):** rows created before M6 have UUIDv7 ids. On first
+start of an M6 build the store rewrites them to derived ids in one transaction: the row, its `_changes`
+entries (`row_id`), referencing columns and their `_changes.value` (`terms.concept_id`,
+`term_parents.term_id`/`parent_id`) and `events.subject_id`. If two local rows map to the same id (a deleted
+and a re-created term), keep the one that is not deleted (or else the newer `created_at`) and drop the
+other's row and `_changes`. Done when `local_settings.rekey_v1 = 1`. Because no device has synced yet,
+every device re-keys independently and the results agree.
+
+### 9.2 Store API for sync (`alst-core::store`)
+
+New migration `0005_sync.sql`:
+
+```
+local_sync_clock  site_id PRIMARY KEY, hlc     -- highest HLC seen from each site (the vector)
+local_sync_pending tbl, row_id, PRIMARY KEY(tbl, row_id)  -- received rows not yet complete
+local_peers       + public_key, addr, port, media_policy(json), paired_at   (ALTER TABLE ADD COLUMN)
+local_dict_dicts  + source_id TEXT              -- dictionaries.id this index was built from
+dictionaries      id, created_at, deleted, title, revision, language, media_hash, enabled   (synced)
+extension_packages id(=extension id), created_at, deleted, version, media_hash        (synced)
+```
+
+`local_sync_clock` is updated in the same transaction as every local write (own site) and every applied
+batch (remote sites). It is never derived from `_changes`, because superseded entries are gone from there.
+
+| fn | does |
+|---|---|
+| `vector()` | `local_sync_clock` as a map site → hlc |
+| `changes_since(vector, max_rows)` | `_changes` entries with `hlc > vector[site]` (missing site = 0), ordered by `(hlc, site_id, tbl, row_id, col)`. A batch never splits entries that share one `(site_id, hlc)`; it may exceed `max_rows` to finish that group. |
+| `events_since(vector, max_rows)` | same rule for `events` |
+| `apply(batch)` | one transaction: for each entry, upsert into `_changes` if `(hlc, site)` beats the stored one; insert events whose id is new; advance `local_sync_clock`; `hlc.recv(max hlc)`; then **materialize** every touched row (below). Returns the set of touched tables. |
+
+**Materialize:** `_changes` is the source of truth; tables are rebuilt from it. For a touched row: if it
+exists, `UPDATE` the columns whose winning value changed; if not, `INSERT` it when every `NOT NULL`
+column without a default has an entry, otherwise add it to `local_sync_pending` and retry at the end of
+every later `apply`. Use `PRAGMA defer_foreign_keys = ON` inside the transaction so parents and children
+can arrive in any order. Unknown tables or columns are an error (schema versions already match, §9.5).
+
+### 9.3 Transport and pairing
+
+- **Identity:** each device has an X25519 static key pair, generated on first start and kept in
+  `local_settings` (never synced). Its public key, shown as a fingerprint, is the device's identity.
+- **Transport:** TCP with the Noise protocol (`snow` crate): `Noise_XX_25519_ChaChaPoly_BLAKE2s`, and
+  `Noise_XXpsk3_…` for QR pairing. Frames are a u16 length plus one Noise message (≤ 65,535 bytes).
+  Application messages are JSON for control and raw bytes for media chunks, each with a type byte and a
+  u32 length, split across frames as needed. Blocking `std::net` with a thread per connection; no async
+  runtime.
+- **Normal connections:** XX handshake; drop the connection unless the remote static key is in
+  `local_peers`.
+- **Discovery:** mDNS (`mdns-sd`), service `_alstroemeria._tcp`, TXT `site`, `name`, `fp` (first 8 bytes
+  of the public key, hex), `schema`, `pair=1` while in pairing mode. Each device listens on a random port
+  and also remembers the last address of each peer, so a sync can try the remembered address when mDNS
+  fails. Android needs a `WifiManager.MulticastLock` and `CHANGE_WIFI_MULTICAST_STATE` (thin Kotlin in
+  the Android shell). Manual "address:port" entry is the fallback everywhere.
+- **Pairing by code (works everywhere):** A taps "Pair new device" and enters pairing mode for 2 minutes
+  (accepts unknown keys, advertises `pair=1`). B lists devices in pairing mode and picks A. XX handshake;
+  both screens show the same 6-digit code derived from the handshake hash; the user taps "Codes match"
+  on both. Each side then stores the other in `local_peers`. A mismatch or a timeout pins nothing.
+- **Pairing by QR (phone camera):** A's pairing screen also shows a QR code with
+  `{v:1, name, addrs, port, pk, secret}` (`secret` = 16 random bytes, valid for that pairing session).
+  B scans it (Tauri barcode-scanner plugin, Android only), connects with `XXpsk3` using `secret` as the
+  PSK and checks that A's static key equals `pk`. Success proves both sides, so no code comparison.
+- **Unpairing** removes the peer from `local_peers` on this device only.
+
+### 9.4 Sync session
+
+One connection syncs both directions. Either side may start it.
+
+1. Both send `hello {protocol: 1, site_id, name, schema_version, hlc_now, vector}`.
+   Refuse (and tell the user which device to update) if `schema_version` differs. Refuse if
+   `|hlc_now − own clock|` is over one hour ("the clock on <device> is off").
+2. Each side streams `changes_since(peer_vector)` and `events_since(peer_vector)` batches (≈ 500 rows);
+   the receiver `apply`s each batch and acks it. An interrupted session loses at most the unacked batch;
+   the next session resumes from the vector.
+3. Each side sends `done`. The UI gets `sync://applied {tables}` and refreshes what it shows.
+4. Asset exchange (§9.6), then the connection closes. `local_peers.last_seen` and `last_vector` are updated.
+
+**When:** on start, when a paired peer appears on mDNS, 30 s after the last local write (debounced) while a
+peer is reachable, on "Sync now", and every 10 minutes while the app is open. Only one session per peer
+at a time. Android syncs only while the app is in the foreground.
+
+### 9.5 Correctness (what the tests prove)
+
+Property tests (`proptest`) on in-memory stores over an in-memory transport: N = 3–4 devices perform
+random writes (create, edit, delete, revive, the same natural key created on several devices) interleaved
+with random pairwise sessions, some cut off mid-batch. After a final round of full syncs, every device has
+identical synced tables, identical `_changes` and identical `events`. Also: syncing twice changes nothing,
+and the order of sessions does not matter.
+
+### 9.6 Assets: media, dictionaries, extension packages
+
+The `media` table syncs as metadata. Files move after the row sync:
+`have {hashes}` / `want {hashes}`, then chunked transfer; the receiver checks the sha256 before
+storing (§8.1).
+
+- **Media policy** (per peer device, in `local_peers.media_policy`, set on the receiving device):
+  `{audio: bool, video: bool, images: bool, max_mb: int}`. Defaults: desktop all true, no limit;
+  Android `audio: true, video: false, images: true, max_mb: 500`.
+- **On demand:** opening a part whose media is missing shows "On <device>, not downloaded" with
+  "Download now", which fetches it from any reachable peer regardless of policy.
+- **Dictionaries:** from M6 a dictionary import also stores the archive in the media store and writes a
+  synced `dictionaries` row. A device that sees a `dictionaries` row with no matching `local_dict_dicts`
+  row (by `source_id`) fetches the archive and imports it in the background; a tombstone removes the
+  local index. Dictionary and extension archives are always transferred, whatever the media policy.
+  Dictionaries imported before M6 have no stored archive; their row in Settings says "re-import to share
+  with other devices".
+- **Extension packages:** installing a `.alext` also stores it as media and writes `extension_packages`.
+  A peer installs (or upgrades) it when the file arrives; its permissions count as approved because the
+  user approved them on the first device. Uninstall is a tombstone. Bundled first-party extensions are
+  not packaged.
+
+### 9.7 UI
+
+- **Settings → Devices:** this device's name (editable, stored in `local_settings`) and fingerprint;
+  "Pair new device"; the paired list with status (online / last synced), "Sync now", media policy and
+  "Remove".
+- A small sync indicator in the top bar: idle, syncing, error (tap for the message).
+- Pairing screens as in §9.3.
+
+Out of scope for M6: sync over the internet or relays, end-to-end encrypted backups, syncing between
+different users, per-table sync choices, background sync on Android, iOS (M10).
 
 ## 10. Content packs (`.alpack`, M8)
 
