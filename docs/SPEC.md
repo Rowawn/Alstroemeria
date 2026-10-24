@@ -325,8 +325,8 @@ This section makes §6.1–6.8 concrete. Where they disagree, this section wins.
 Implemented in M3: manifest loading and validation, registry, capability resolution, install/
 uninstall of `.alext`, permissions, the worker runtime (`js` and `wasm`), and these extension
 points: **annotator, decorator, panel, command, eventListener**, plus settings and storage.
-Deferred to the milestone that first needs them: `tokenizer`/`normalizer` in JS (M5, if ever;
-core engines cover planned languages), `lookupProvider` (M5), `importer`/`exporter` (the `importer` contract is fixed in §6.9.10 but not implemented; M8),
+Deferred to the milestone that first needs them: `tokenizer`/`normalizer` in JS (never so far;
+core engines cover planned languages), `lookupProvider` (implemented in M5, §16.8), `importer`/`exporter` (the `importer` contract is fixed in §6.9.10 but not implemented; M8),
 `activity` (M9/M11), `native` runtime (M11). The manifest schema accepts their declarations
 now; the host ignores them with a logged notice.
 
@@ -768,7 +768,11 @@ This section adds morphological languages. It extends §5 (tokens), §6.9 (exten
   (on by default). This is the simplest path that works offline on every platform.
   Record the installer/APK size increase in the roadmap; if the installer exceeds ~60 MB,
   M7 moves dictionaries to downloadable "language data" (pinned URL + sha256, or import from file).
-- The build session confirms the current Lindera API and dictionary crates and pins versions.
+- Pinned: `lindera =6.2.0` (default features off) with `embed-ipadic` / `embed-ko-dic`. The dictionary crates' `build.rs`
+  **download the pinned dictionary source at build time** (md5-checked, from lindera.dev), so the first build needs network;
+  later builds use cargo's cache. The tokenizer engine names in a language manifest are `lindera-ipadic` and
+  `lindera-ko-dic` (`declarative.tokenizer.engine`); `regex` stays the default. The dictionary loads lazily on first use.
+- A language can't use an engine that wasn't compiled in (feature off): the language fails to load with a clear error.
 
 ### 16.2 Word grouping (what a reader "word" is)
 Morphological analysers split text finer than a learner thinks (`食べ|させ|られ|た`).
@@ -784,6 +788,15 @@ The engine therefore **groups morphemes into word tokens**. A grouped token is o
   (いる, しまう, おく, いく, くる, ある, みる after て/で); `助詞-接続助詞` て/で/ば/たり;
   `名詞-接尾-助動詞語幹` (そう); `形容詞-非自立`/`形容詞-接尾`.
 - Everything else (particles, nouns, symbols) is its own token. Max 8 morphemes per group.
+- Clarifications made while implementing, all checked against real text: `助詞-並立助詞` たり/だり also absorb (飲んだり);
+  a 動詞-自立 する after an 未然 form absorbs (the causative/passive さ in 読ま|さ|れ|て|い|た); an auxiliary-verb run
+  that starts a group (でした, だった) forms one token (lemma = the first auxiliary's base) but is not attached to a preceding noun;
+  a polite prefix 接頭詞-名詞接続 (お, ご) joins the following noun (お茶), and joins する too when that noun is サ変接続.
+  Whitespace in the text always ends a group. Reading: if a morpheme has no dictionary reading and contains kanji the whole
+  word has none; kana/ASCII morphemes contribute their own text.
+- `ann["ja.morphemes"]` / `ann["ko.morphemes"]` entries are `{ surface, base, pos, reading? }` with `pos` joined by `-`
+  (`動詞-自立`). Korean contracted tokens are expanded into several entries: the first carries the token's surface, the rest have
+  an empty `surface` (`했` → `{surface:"했",base:"하"}`, `{surface:"",base:"았"}`).
 - Readings: katakana → hiragana. Words without a dictionary reading get none.
 
 **Korean (ko-dic / Sejong POS):** groups never cross whitespace (eojeol boundary).
@@ -792,13 +805,16 @@ The engine therefore **groups morphemes into word tokens**. A grouped token is o
 - Particles (`J*`) are separate tokens, so `학교에` → `학교` + `에`, and `학생이에요` → `학생` + `이에요` (lemma 이다).
 - Contracted morphemes (e.g. `했` = `하/VV+았/EP`) are expanded using ko-dic's expression field;
   verbal lemma = stem + 다 (`먹었습니다`→먹다, `공부했어요`→공부하다, `예뻐요`→예쁘다, `갔다`→가다).
-  Genuinely ambiguous stems (들었다: 듣다/들다) take the analyser's choice.
+  Genuinely ambiguous stems (들었다: 듣다/들다) take the analyser's choice, and so do wrong analyses such as 줄 (noun) read as
+  주다 + ㄹ in `시간 가는 줄 몰랐습니다`: these are dictionary-analysis errors, not grouping errors.
 
 ### 16.3 Term keys
-Language manifests gain `"termKey": "surface" | "lemma"` (default `surface`). `ja` and `ko` use
+Language manifests gain `declarative.termKey`: `"surface" | "lemma"` (default `surface`). `ja` and `ko` use
 `lemma`: the unit's key is the normalized lemma, so 食べた, 食べない and 食べさせられた all show
 and update the status of the term 食べる. The term editor shows the lemma as the term and the
-surface as "seen as". Multi-word matching (§5.3) runs over the same keys. `es` is unchanged.
+surface as "seen as". The term is *stored* with the lemma as its text (a multi-word selection stores the lemmas joined as
+written, `気がした` → `気がする`, key `気 が する`); the editor sends the key it got from `open_term` back to `save_term`, so a
+lemma that re-tokenizes differently can't fork the term. Multi-word matching (§5.3) runs over the same keys. `es` is unchanged.
 
 ### 16.4 Universal POS roles
 Languages that provide `<lang>.pos` map their tags onto the render roles:
@@ -819,6 +835,10 @@ spans the tokenizer grouped differently. Written from scratch; **no Yomitan code
   Condition names: `v1` (ichidan), `v5` (godan, any row), `vk` (来る), `vs` (する), `adj-i`,
   plus intermediate forms (`past`, `te`, `masu`, `neg`, `tai`, …) for chaining. The surface starts
   with all conditions allowed.
+- **Rule file:** `extensions/lang-ja/deinflect.json` is generated by `scripts/gen-ja-deinflect.py` from a conjugation table
+  (edit the script, not the JSON). Rules listed first win a dedupe, so compound rules (させられる → させる, "passive") come first.
+  `reasons` come out in conjugation order. For する compounds the same rules also rewrite to the bare noun (勉強した → 勉強, valid only
+  if the entry is tagged `vs`). Entry `rules` are normalised on import (`v5k` → `v5`, `vs-i` → `vs`, `v1-s` → `v1`, `adj-ix` → `adj-i`).
 - **Algorithm:** breadth-first from the surface; apply every matching rule; depth ≤ 10;
   dedupe on (text, conditions). Output: candidates `{ text, conditions, reasons[] }`.
 - **Validation against dictionaries:** a candidate counts only if a dictionary entry with that
@@ -865,7 +885,8 @@ Queries normalize katakana ↔ hiragana for the reading index.
 Import Yomitan `term_meta_bank_*` into a new local table
 `local_dict_meta(dict_id, term, reading, mode, data json)` with modes `freq` and `pitch`
 (pitch data: `{ reading, pitches: [{ position, nasal?, devoice? }] }`). Kanji banks stay ignored.
-Host API addition (permission `dict:read`): `alst.dict.meta(language, { term, reading?, mode })`.
+Host API addition (permission `dict:read`): `alst.dict.meta(language, { term, reading?, mode })`; `terms: string[]` (≤ 500)
+may replace `term` to fetch many in one call. Frequency rows store `{ value, display? }`; the lowest value is the best rank.
 Pitch data is user-imported (e.g. the Kanjium pitch dictionary, CC BY-SA 4.0); nothing is bundled.
 
 ### 16.8 Extension point: lookupProvider (implemented in M5)
@@ -897,7 +918,10 @@ Plain text only (no HTML). Sections render under the dictionary results in decor
 | `lang-ko` | language, declarative | → `ko.tokenize`, `ko.lemma`, `ko.pos`, `ko.morphemes` | Lindera ko-dic, `termKey: lemma`, lookup URLs (Naver, Wiktionary) |
 | `ja-furigana` | addon, JS decorator | `ja.reading` | Segmented ruby over kanji (okurigana aligned). Setting: show for all / unknown (status 0–1) / learning (0–3) / none; default unknown |
 | `ja-pitch` | addon, JS annotator + decorator + lookupProvider; `dict:read` | `ja.reading` → `ja.pitch` | Pitch from imported meta banks; colours the word by pattern (heiban/atamadaka/nakadaka/odaka) or shows the downstep as a badge (setting); popup pitch graph; tells the user to import a pitch dictionary if none |
-| `ko-hanja` | addon, JS lookupProvider + decorator | `ko.lemma` → `ko.hanja` | Hanja for Sino-Korean words, with per-character meanings in the popup; optional hanja ruby (off by default). Data: a TSV `word\thanja\tmeaning`. Bundle a dataset only if its licence is MIT/BSD/Apache/CC0/CC-BY (check libhangul's `hanja.txt` licence); otherwise ship without data and let the user import a TSV |
+| `ko-hanja` | addon, JS lookupProvider + decorator | `ko.lemma` → `ko.hanja` | Hanja for Sino-Korean words, with per-character meanings in the popup; optional hanja ruby (off by default). Data: a TSV `word\thanja\tmeaning`. **Decision (M5):** libhangul's `data/hanja/hanja.txt` carries a BSD-3-Clause notice in its own header (the repository as a whole is LGPL-2.1,
+but this file states BSD), so it is bundled as `extensions/ko-hanja/hanja.tsv` (303k rows, 6.4 MB; built by `scripts/build-hanja-tsv.py`) with the
+notice in `DATA-LICENSE`, shown in About. Provenance of the entries beyond that header is not documented upstream; if that is ever challenged, the
+extension works with any TSV, so the data can be swapped or dropped |
 | `addon-grammar-colors` | addon, JS decorator; targets `*` | `*.pos` | Colours words by role; settings choose which roles. Disabled for `es` with "missing es.pos" — the capability system working as intended |
 
 Mora counting for pitch: each kana is one mora except small ゃゅょぁぃぅぇぉ (attach to the previous);

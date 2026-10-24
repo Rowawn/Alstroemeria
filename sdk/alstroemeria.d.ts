@@ -42,12 +42,16 @@ export interface Unit {
 
 export type Role =
   | "noun" | "verb" | "adjective" | "adverb" | "particle" | "function" | "name"
-  | "accent-high" | "accent-low" | "accent-drop" | "info" | "warn"
+  | "accent-high" | "accent-low" | "accent-drop"
+  | "accent-heiban" | "accent-atamadaka" | "accent-nakadaka" | "accent-odaka"
+  | "info" | "warn"
   | "c1" | "c2" | "c3" | "c4" | "c5" | "c6";
 
 /** Render hints are a closed vocabulary; colors are semantic roles that themes map to real colors. */
 export type RenderHint =
   | { kind: "ruby"; text: string }
+  /** Furigana over parts of the unit (SPEC §16.9). The `base`s must concatenate to the unit's text, otherwise the hint is ignored. */
+  | { kind: "ruby"; segments: { base: string; rt?: string }[] }
   | { kind: "color"; role: Role }
   | { kind: "underline"; role: Role; style?: "solid" | "dotted" | "wavy" | "double" }
   | { kind: "badge"; text: string; role?: Role }
@@ -89,6 +93,36 @@ export interface DictResult {
   glossary: string[];
 }
 
+/** One row of an imported Yomitan `term_meta_bank` (SPEC §16.7). */
+export interface MetaResult {
+  dictId: number;
+  dictTitle: string;
+  term: string;
+  reading: string;
+  mode: "freq" | "pitch";
+  /** freq: `{ value, display? }`; pitch: `{ reading, pitches: [{ position, nasal?, devoice? }] }`. */
+  data: any;
+}
+
+/** What a lookup provider returns for the term editor (SPEC §16.8). Plain text only. */
+export type LookupItem =
+  | { kind: "text"; text: string; role?: Role }
+  | { kind: "kv"; label: string; text: string }
+  /** Drawn by the app as a pitch-accent graph. */
+  | { kind: "pitch"; reading: string; downstep: number }
+  /** https only; opens in the system browser. */
+  | { kind: "link"; label: string; url: string };
+export interface LookupSection {
+  title: string;
+  items: LookupItem[];
+}
+export interface LookupInput {
+  language: string;
+  unit: { text: string; key: string; lemma?: string; status: number };
+  tokens: Token[];
+  sentence: string;
+}
+
 // ---- the `alst` object ---------------------------------------------------------------------------------
 
 export interface Alst {
@@ -122,6 +156,8 @@ export interface Alst {
   dict: {
     /** Needs `dict:read`. */
     lookup(language: string, query: string): Promise<DictResult[]>;
+    /** Needs `dict:read`. Frequency or pitch rows for `term` (or up to 500 `terms` in one call) from imported dictionaries (SPEC §16.7). */
+    meta(language: string, q: { term?: string; terms?: string[]; reading?: string; mode: "freq" | "pitch" }): Promise<MetaResult[]>;
   };
   net: {
     /** Needs `net:<host>`; HTTPS only, ≤ 10 MB, 20 s, no cookies, redirects are re-checked. */
@@ -168,6 +204,11 @@ export interface ExtensionModule {
    * good place to compute statistics for a panel. Needs a `contributes.decorators` entry.
    */
   decorate?(input: { language: string; units: Unit[]; tokens: Token[] }): Record<number, RenderHint[]> | Promise<Record<number, RenderHint[]>>;
+  /**
+   * Sections for the term editor, asked for when it opens (2 s limit). Needs a `contributes.lookupProviders` entry.
+   * Shown under the dictionary results, in decorator order.
+   */
+  lookup?(input: LookupInput): LookupSection[] | Promise<LookupSection[]>;
   /** Handlers for `contributes.commands`, by command id (30 s limit). */
   commands?: Record<string, (args: unknown) => unknown>;
   /** Core events (with `events:read`) and your own events. */

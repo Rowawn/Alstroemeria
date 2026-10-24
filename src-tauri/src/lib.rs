@@ -30,6 +30,8 @@ pub(crate) struct AppState {
     media: alst_core::media::MediaDir,
     /// Language definitions from enabled language extensions; rebuilt when extensions change.
     languages: RwLock<Vec<LanguageDef>>,
+    /// Deinflection rules by language (SPEC §16.5), rebuilt with `languages`.
+    deinflectors: RwLock<HashMap<String, alst_text::deinflect::Deinflector>>,
     /// SQLite rowid of the last event forwarded to the UI.
     event_cursor: AtomicI64,
 }
@@ -147,16 +149,31 @@ struct LanguageInfo {
     name: String,
     rtl: bool,
     lookup_urls: Vec<LookupUrl>,
+    /// Words are keyed by lemma (SPEC §16.3).
+    lemma_keys: bool,
+    /// Clicked text is looked up with `lookup_scan` (SPEC §16.6).
+    scan_lookup: bool,
+    /// No spaces between words (affects reader CSS).
+    spaceless: bool,
 }
 
 #[tauri::command]
 fn list_languages(state: State<AppState>) -> Res<Vec<LanguageInfo>> {
+    let rules = state.deinflectors.read().map_err(err)?;
     Ok(state
         .languages
         .read()
         .map_err(err)?
         .iter()
-        .map(|l| LanguageInfo { id: l.id.clone(), name: l.name.clone(), rtl: l.rtl, lookup_urls: l.lookup_urls.clone() })
+        .map(|l| LanguageInfo {
+            id: l.id.clone(),
+            name: l.name.clone(),
+            rtl: l.rtl,
+            lookup_urls: l.lookup_urls.clone(),
+            lemma_keys: l.term_key == alst_text::TermKey::Lemma,
+            scan_lookup: rules.contains_key(&l.id),
+            spaceless: l.spaceless(),
+        })
         .collect())
 }
 
@@ -222,20 +239,41 @@ struct MediaView {
 }
 
 /// Term lookup tables for a language: key → state, plus the multi-word matcher.
-fn term_tables(store: &Store, language: &str) -> Res<(Matcher, HashMap<String, TermState>)> {
-    let rows = store.term_states(language).map_err(err)?;
-    let matcher = Matcher::new(rows.iter().filter(|r| r.word_count > 1).map(|r| r.text_lc.as_str()));
+fn term_tables(store: &Store, lang: &LanguageDef) -> Res<(Matcher, HashMap<String, TermState>)> {
+    let rows = store.term_states(&lang.id).map_err(err)?;
+    let matcher = lang.matcher(rows.iter().filter(|r| r.word_count > 1).map(|r| r.text_lc.as_str()));
     let map = rows.into_iter().map(|r| (r.text_lc, TermState { id: r.id, status: r.status })).collect();
     Ok((matcher, map))
 }
 
-fn units_for(store: &Store, lang: &LanguageDef, text: &str) -> Res<Vec<Unit>> {
-    Ok(view_for(store, lang, text)?.0)
+fn units_for(store: &Store, lang: &LanguageDef, part_id: &str, text: &str) -> Res<Vec<Unit>> {
+    Ok(view_for(store, lang, part_id, text)?.0)
 }
 
-fn view_for(store: &Store, lang: &LanguageDef, text: &str) -> Res<(Vec<Unit>, Vec<ViewToken>)> {
-    let (matcher, map) = term_tables(store, &lang.id)?;
+/// Tokenized sentences of a part, from `local_token_cache` for languages where analysis is slow (SPEC §5.3).
+/// The cache key covers the language definition and the part's text, so edits and extension updates recompute.
+fn sentences_for(store: &Store, lang: &LanguageDef, part_id: &str, text: &str) -> Vec<Vec<alst_text::Token>> {
+    if !lang.cacheable() {
+        return lang.tokenize(text);
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in text.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    let fingerprint = format!("{}:{h:016x}:{}", lang.fingerprint, text.len());
+    if let Some(sentences) = store.token_cache_get(part_id, &fingerprint).and_then(|j| serde_json::from_str(&j).ok()) {
+        return sentences;
+    }
     let sentences = lang.tokenize(text);
+    if let Ok(json) = serde_json::to_string(&sentences) {
+        store.token_cache_put(part_id, &fingerprint, &json, 40);
+    }
+    sentences
+}
+
+fn view_for(store: &Store, lang: &LanguageDef, part_id: &str, text: &str) -> Res<(Vec<Unit>, Vec<ViewToken>)> {
+    let (matcher, map) = term_tables(store, lang)?;
+    let sentences = sentences_for(store, lang, part_id, text);
     Ok((build_units(&sentences, &matcher, &map), flatten(&sentences)))
 }
 
@@ -245,7 +283,7 @@ fn get_part_view(state: State<AppState>, part_id: String) -> Res<PartView> {
     let part = store.get_part(&part_id).map_err(err)?;
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
-    let (units, tokens) = view_for(&store, &lang, &part.text)?;
+    let (units, tokens) = view_for(&store, &lang, &part.id, &part.text)?;
     let media = match &part.media_hash {
         Some(h) => store.media_info(h).map_err(err)?.map(|m| MediaView { present: state.media.exists(&m.id), video: m.mime.starts_with("video/"), hash: m.id, mime: m.mime }),
         None => None,
@@ -262,7 +300,10 @@ fn squash(text: &str) -> String {
 #[serde(rename_all = "camelCase")]
 struct TermView {
     key: String,
+    /// The term as stored: the lemma for lemma-keyed languages (SPEC §16.3).
     text: String,
+    /// The text as it appeared in the reader, when it differs from `text`.
+    seen_as: Option<String>,
     word_count: usize,
     term: Option<Term>,
     dict: Vec<LookupResult>,
@@ -273,7 +314,8 @@ struct TermView {
 #[tauri::command]
 fn open_term(app: tauri::AppHandle, state: State<AppState>, language: String, text: String, log_lookup: bool) -> Res<TermView> {
     let lang = state.lang(&language)?;
-    let (key, word_count) = lang.term_key(&text).ok_or("no word in selection")?;
+    let info = lang.term_info(&text).ok_or("no word in selection")?;
+    let (key, word_count) = (info.key, info.word_count);
     let mut store = state.store()?;
     let term = store.find_term(&language, &key).map_err(err)?;
     let dict = alst_dict::lookup(store.local_conn(), &language, &key, 30).map_err(err)?;
@@ -282,7 +324,9 @@ fn open_term(app: tauri::AppHandle, state: State<AppState>, language: String, te
         store.emit_event("term.lookup", Some(&language), subject, &serde_json::json!({ "source": "popup" })).map_err(err)?;
         state.forward_events(&app, &store);
     }
-    Ok(TermView { key, text: squash(&text), word_count, term, dict })
+    let seen = squash(&text);
+    let seen_as = (seen != info.display).then_some(seen);
+    Ok(TermView { key, text: info.display, seen_as, word_count, term, dict })
 }
 
 #[tauri::command]
@@ -293,16 +337,21 @@ fn save_term(
     text: String,
     patch: TermPatch,
     parents: Option<Vec<String>>,
+    key: Option<(String, usize)>,
 ) -> Res<Term> {
     let lang = state.lang(&language)?;
-    let (key, wc) = lang.term_key(&text).ok_or("no word in term")?;
+    // The editor passes the key `open_term` computed, so a lemma that re-tokenizes differently can't fork the term.
+    let (key, wc) = match key {
+        Some(k) => k,
+        None => lang.term_key(&text).ok_or("no word in term")?,
+    };
     let mut store = state.store()?;
     let term = store.save_term(&language, &squash(&text), &key, wc as i64, &patch).map_err(err)?;
     if let Some(parents) = parents {
         let mut ids = Vec::new();
         for p in parents.iter().filter(|p| !p.trim().is_empty()) {
-            let (pkey, pwc) = lang.term_key(p).ok_or_else(|| format!("'{p}' has no word"))?;
-            let parent = store.save_term(&language, &squash(p), &pkey, pwc as i64, &TermPatch::default()).map_err(err)?;
+            let pinfo = lang.term_info(p).ok_or_else(|| format!("'{p}' has no word"))?;
+            let parent = store.save_term(&language, &pinfo.display, &pinfo.key, pinfo.word_count as i64, &TermPatch::default()).map_err(err)?;
             if parent.id != term.id && !ids.contains(&parent.id) {
                 ids.push(parent.id);
             }
@@ -322,7 +371,7 @@ fn finish_part(app: tauri::AppHandle, state: State<AppState>, part_id: String, m
     let part = store.get_part(&part_id).map_err(err)?;
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
-    let units = units_for(&store, &lang, &part.text)?;
+    let units = units_for(&store, &lang, &part.id, &part.text)?;
     let mut seen = HashSet::new();
     let unknown: Vec<(String, String, i64)> = units
         .iter()
@@ -376,6 +425,18 @@ fn delete_dictionary(state: State<AppState>, id: i64) -> Res<()> {
 #[tauri::command]
 fn set_dictionary_enabled(state: State<AppState>, id: i64, enabled: bool) -> Res<()> {
     alst_dict::set_enabled(state.store()?.local_conn(), id, enabled).map_err(err)
+}
+
+/// Dictionary entries for the start of `text` with conjugation handling (SPEC §16.6).
+#[tauri::command]
+fn lookup_scan(state: State<AppState>, language: String, text: String, max_len: Option<usize>) -> Res<Vec<alst_dict::ScanResult>> {
+    let rules = state.deinflectors.read().map_err(err)?;
+    alst_dict::lookup_scan(state.store()?.local_conn(), &language, rules.get(&language), &text, max_len.unwrap_or(20).min(60)).map_err(err)
+}
+
+#[tauri::command]
+fn dict_meta(state: State<AppState>, language: String, term: String, reading: Option<String>, mode: String) -> Res<Vec<alst_dict::MetaResult>> {
+    alst_dict::meta(state.store()?.local_conn(), &language, &term, reading.as_deref(), &mode).map_err(err)
 }
 
 #[tauri::command]
@@ -504,6 +565,7 @@ pub fn run() {
             let store = Store::open(&db_path)?;
             let registry = alst_ext::Registry::load(&alst_ext::registry::BUNDLED, Some(&ext_root));
             let languages = alst_ext::host::language_defs(&registry, &store)?;
+            let deinflectors = alst_ext::host::deinflectors(&registry, &store)?;
             let event_cursor = AtomicI64::new(store.last_event_rowid()?);
             let media = alst_core::media::MediaDir::new(dir.join("media"));
             media.clear_tmp();
@@ -515,6 +577,7 @@ pub fn run() {
                 registry: RwLock::new(registry),
                 ext_root,
                 languages: RwLock::new(languages),
+                deinflectors: RwLock::new(deinflectors),
                 event_cursor,
             });
             Ok(())
@@ -543,6 +606,8 @@ pub fn run() {
             delete_dictionary,
             set_dictionary_enabled,
             lookup_dict,
+            lookup_scan,
+            dict_meta,
             open_url,
             export_tsv,
             save_export,

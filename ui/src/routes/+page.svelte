@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { api, type Language } from "$lib/api";
+  import About from "$lib/About.svelte";
   import CommandPalette from "$lib/CommandPalette.svelte";
   import Dictionaries from "$lib/Dictionaries.svelte";
   import { extHost } from "$lib/ext";
@@ -14,7 +15,7 @@
   import Toasts from "$lib/Toasts.svelte";
 
   let languages = $state<Language[] | null>(null);
-  let tab = $state<"library" | "dictionaries" | "export" | "extensions">("library");
+  let tab = $state<"library" | "dictionaries" | "export" | "extensions" | "about">("library");
   let partId = $state<string | null>(null);
   let error = $state("");
 
@@ -27,7 +28,9 @@
         languages = l;
         // Developer-only: on-device verification of the extension host (see selftest.ts).
         const selftest = await invoke<string | null>("selftest_enabled").catch(() => null);
-        if (selftest?.startsWith("media")) {
+        if (selftest?.startsWith("cjk")) {
+          (await import("$lib/selftest-cjk")).run(l, selftest, { openPart: (id) => (partId = id), closePart: () => (partId = null) });
+        } else if (selftest?.startsWith("media")) {
           (await import("$lib/selftest-media")).run(l, selftest, { openPart: (id) => (partId = id), closePart: () => (partId = null) });
         } else if (selftest !== null) {
           (await import("$lib/ext/selftest")).run(l, selftest, {
@@ -55,6 +58,7 @@
         <button class:primary={tab === "dictionaries"} onclick={() => (tab = "dictionaries")}>Dictionaries</button>
         <button class:primary={tab === "export"} onclick={() => (tab = "export")}>Export</button>
         <button class:primary={tab === "extensions"} onclick={() => (tab = "extensions")}>Extensions</button>
+        <button class:primary={tab === "about"} onclick={() => (tab = "about")}>About</button>
       </nav>
       {#if tab === "library"}
         <Library {languages} onOpen={(id) => (partId = id)} />
@@ -62,6 +66,8 @@
         <Dictionaries {languages} />
       {:else if tab === "extensions"}
         <Extensions {languages} />
+      {:else if tab === "about"}
+        <About />
       {:else}
         <Export {languages} />
       {/if}

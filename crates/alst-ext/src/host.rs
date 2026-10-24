@@ -204,6 +204,21 @@ pub fn language_defs(registry: &Registry, store: &Store) -> Result<Vec<LanguageD
         .collect()
 }
 
+/// Deinflection rules (SPEC §16.5) of the enabled language extensions that ship them, by language id.
+pub fn deinflectors(registry: &Registry, store: &Store) -> Result<std::collections::HashMap<String, alst_text::deinflect::Deinflector>> {
+    let states = user_states(store)?;
+    let mut out = std::collections::HashMap::new();
+    for e in registry.all().filter(|e| e.manifest.kind == Kind::Language && states.get(&e.manifest.id).is_none_or(|s| s.enabled)) {
+        let def = LanguageDef::from_manifest(&e.raw).map_err(|err| Error::Manifest(format!("{}: {err}", e.manifest.id)))?;
+        let Some(path) = &def.deinflection else { continue };
+        let (bytes, _) = registry.read_file(&e.manifest.id, path)?;
+        let json = String::from_utf8(bytes).map_err(|_| Error::Manifest(format!("{}: {path} is not UTF-8", e.manifest.id)))?;
+        let rules = alst_text::deinflect::Deinflector::from_json(&json).map_err(|err| Error::Manifest(format!("{}: {err}", e.manifest.id)))?;
+        out.insert(def.id, rules);
+    }
+    Ok(out)
+}
+
 pub fn set_provider(registry: &Registry, store: &mut Store, language: &str, capability: &str, ext_id: &str) -> Result<()> {
     let ext = registry.get(ext_id).ok_or_else(|| Error::Invalid(format!("no extension '{ext_id}'")))?;
     let lang_provides = |c: &str| {
@@ -416,6 +431,30 @@ pub fn call(ctx: &mut HostCtx, ext_id: &str, method: &str, p: &Value) -> Result<
             let key = lang_of(ctx.languages, &language).ok().and_then(|l| l.term_key(&query)).map_or(query, |(k, _)| k);
             Ok(json!(alst_dict::lookup(ctx.store.local_conn(), &language, &key, 30).map_err(|e| Error::Invalid(e.to_string()))?))
         }
+        "dict.meta" => {
+            need(&m, Need::DictRead, "dict:read")?;
+            #[derive(Deserialize)]
+            struct P {
+                language: String,
+                term: Option<String>,
+                /// Batch form: rows for up to 500 terms in one call.
+                terms: Option<Vec<String>>,
+                reading: Option<String>,
+                mode: String,
+            }
+            let P { language, term, terms, reading, mode } = params(p)?;
+            if mode != "freq" && mode != "pitch" {
+                return Err(Error::Invalid(format!("unknown meta mode '{mode}' (freq or pitch)")));
+            }
+            let mut all: Vec<String> = terms.unwrap_or_default();
+            all.truncate(500);
+            all.extend(term);
+            let mut out = Vec::new();
+            for t in &all {
+                out.extend(alst_dict::meta(ctx.store.local_conn(), &language, t, reading.as_deref(), &mode).map_err(|e| Error::Invalid(e.to_string()))?);
+            }
+            Ok(json!(out))
+        }
         other => Err(Error::Invalid(format!("unknown host method '{other}'"))),
     }
 }
@@ -506,6 +545,7 @@ mod tests {
             ("terms.search", json!({ "language": "es" })),
             ("terms.update", json!({ "id": id, "patch": { "status": 3 } })),
             ("dict.lookup", json!({ "language": "es", "query": "gato" })),
+            ("dict.meta", json!({ "language": "ja", "term": "橋", "mode": "freq" })),
             ("events.query", json!({ "type": "term.status" })),
         ] {
             assert!(denied(f.call("a.none", m, p.clone())), "a.none {m}");
@@ -513,6 +553,8 @@ mod tests {
         assert_eq!(f.call("a.read", "terms.get", json!({ "language": "es", "texts": ["GATO"] })).unwrap()[0]["status"], 2);
         assert_eq!(f.call("a.read", "terms.search", json!({ "language": "es", "query": "ga" })).unwrap().as_array().unwrap().len(), 1);
         assert!(f.call("a.read", "dict.lookup", json!({ "language": "es", "query": "gato" })).unwrap().as_array().unwrap().is_empty());
+        assert!(f.call("a.read", "dict.meta", json!({ "language": "ja", "term": "橋", "mode": "freq" })).unwrap().as_array().unwrap().is_empty());
+        assert!(f.call("a.read", "dict.meta", json!({ "language": "ja", "term": "橋", "mode": "ipa" })).is_err(), "only freq and pitch");
         assert_eq!(f.call("a.read", "events.query", json!({ "type": "term.status" })).unwrap().as_array().unwrap().len(), 1);
         assert!(denied(f.call("a.read", "terms.update", json!({ "id": id, "patch": { "status": 3 } }))));
         let updated = f.call("a.write", "terms.update", json!({ "id": id, "patch": { "status": 3, "translation": "cat" } })).unwrap();
@@ -599,10 +641,36 @@ mod tests {
     }
 
     #[test]
+    fn bundled_cjk_addons_resolve_per_language() {
+        let f = Fixture::new("cjk", &[]);
+        let active = |lang: &str| -> (Vec<String>, Vec<(String, String)>) {
+            let (r, _) = resolve_language(&f.registry, &f.store, lang, "macos").unwrap();
+            (r.active.clone(), r.disabled.iter().map(|d| (d.id.clone(), d.reason.clone())).collect())
+        };
+        let (ja, _) = active("ja");
+        for id in ["lang.ja", "ja.furigana", "ja.pitch", "addon.grammar-colors"] {
+            assert!(ja.contains(&id.to_string()), "{id} active for ja: {ja:?}");
+        }
+        assert!(!ja.contains(&"ko.hanja".to_string()));
+        let (ko, _) = active("ko");
+        assert!(ko.contains(&"ko.hanja".to_string()) && ko.contains(&"addon.grammar-colors".to_string()) && !ko.contains(&"ja.pitch".to_string()));
+        // the capability system at work: no es.pos, so grammar colours switch themselves off with a reason
+        let (es, disabled) = active("es");
+        assert!(!es.contains(&"addon.grammar-colors".to_string()));
+        assert!(disabled.iter().any(|(id, why)| id == "addon.grammar-colors" && why.contains("es.pos")), "{disabled:?}");
+    }
+
+    #[test]
     fn language_defs_come_from_the_registry() {
         let mut f = Fixture::new("langs", &[]);
-        assert_eq!(f.languages.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), vec!["es"]);
+        let mut ids = f.languages.iter().map(|l| l.id.as_str()).collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, vec!["es", "ja", "ko"]);
         f.store.set_ext_state("lang.es", Some(false), None, None).unwrap();
-        assert!(language_defs(&f.registry, &f.store).unwrap().is_empty());
+        let ids: Vec<String> = language_defs(&f.registry, &f.store).unwrap().into_iter().map(|l| l.id).collect();
+        assert!(!ids.contains(&"es".to_string()));
+        let rules = deinflectors(&f.registry, &f.store).unwrap();
+        assert!(rules.contains_key("ja") && !rules.contains_key("ko") && !rules.contains_key("es"));
+        assert!(!rules["ja"].deinflect("食べさせられた").iter().all(|c| c.text != "食べる"));
     }
 }

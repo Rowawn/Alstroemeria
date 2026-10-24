@@ -45,7 +45,7 @@ function fakeWorkerFactory(handlers: Record<string, Handler>, created: string[])
 const info = (id: string, extra: Partial<ExtInfo> = {}): ExtInfo => ({
   id, name: id.toUpperCase(), version: "1.0.0", kind: "addon", description: null, author: null, license: "MIT", source: "installed",
   runtime: "js", entry: "main.js", targets: ["*"], language: null, provides: [], requires: [], optional: [], permissions: [], platforms: null,
-  contributes: { decorators: [], panels: [], commands: [] }, unsupported: [], enabled: true, languages: [], settings: {}, ...extra,
+  contributes: { decorators: [], panels: [], commands: [], lookupProviders: [] }, unsupported: [], enabled: true, languages: [], settings: {}, ...extra,
 });
 
 const view = (active: ExtInfo[], extra: Partial<ResolvedView> = {}): ResolvedView => ({
@@ -150,6 +150,45 @@ describe("ExtensionHost", () => {
     expect(host.status("good")).toBe("ready");
   });
 
+  describe("lookup providers (SPEC §16.8)", () => {
+    const input = { language: "ja", unit: { text: "食べた", key: "食べる", lemma: "食べる", status: 0 }, tokens: [], sentence: "食べた。" };
+    const lp = (id: string, extra: Partial<ExtInfo> = {}) =>
+      info(id, { contributes: { decorators: [], panels: [], commands: [], lookupProviders: [{ id: "l", title: "L" }] }, ...extra });
+
+    it("collects sections in decorator order and drops malformed output", async () => {
+      handlers.p1 = (m) => (m === "lookup" ? [{ title: "One", items: [{ kind: "text", text: "a" }] }] : null);
+      handlers.p2 = (m) =>
+        m === "lookup"
+          ? [
+              { title: "Two", items: [{ kind: "link", label: "x", url: "http://insecure.example" }, { kind: "pitch", reading: "はし", downstep: 2 }] },
+              { title: "", items: [{ kind: "text", text: "no title" }] },
+              { title: "Empty", items: [{ kind: "hologram" }] },
+            ]
+          : null;
+      const sections = await host.lookup("ja", input, view([lp("p1"), lp("p2")], { decoratorOrder: ["p2", "p1"] }));
+      expect(sections.map((s) => s.title)).toEqual(["Two", "One"]);
+      expect(sections[0].items).toEqual([{ kind: "pitch", reading: "はし", downstep: 2 }]); // http link dropped
+    });
+
+    it("times out after 2s, skips that provider and marks it errored", async () => {
+      handlers.slow = (m) => (m === "lookup" ? new Promise(() => {}) : null);
+      handlers.fast = (m) => (m === "lookup" ? [{ title: "Fast", items: [{ kind: "kv", label: "k", text: "v" }] }] : null);
+      const p = host.lookup("ja", input, view([lp("slow"), lp("fast")]));
+      await vi.advanceTimersByTimeAsync(TIMEOUTS.lookup + 10);
+      expect((await p).map((s) => s.title)).toEqual(["Fast"]);
+      expect(TIMEOUTS.lookup).toBe(2000);
+      expect(host.error("slow")?.message).toContain("lookup timed out after 2s");
+      expect(host.status("fast")).toBe("ready");
+    });
+
+    it("ignores extensions without lookup providers and providers with no lookup export", async () => {
+      handlers.none = () => null;
+      handlers.noexport = (m) => (m === "lookup" ? [] : null);
+      expect(await host.lookup("ja", input, view([info("none"), lp("noexport")]))).toEqual([]);
+      expect(created).toEqual(["noexport"]);
+    });
+  });
+
   it("activation that never finishes errors after 5s", async () => {
     handlers.hang = () => new Promise(() => {});
     const p = host.warm("es", view([info("hang")]));
@@ -162,7 +201,7 @@ describe("ExtensionHost", () => {
     const mk = (role: string) => () => ({ 0: [{ kind: "color", role }, { kind: "tooltip", text: role }] });
     handlers.d1 = (m) => (m === "decorate" ? mk("verb")() : null);
     handlers.d2 = (m) => (m === "decorate" ? mk("noun")() : null);
-    const dec = { decorators: [{ id: "d", priority: 50 }], panels: [], commands: [] };
+    const dec = { decorators: [{ id: "d", priority: 50 }], panels: [], commands: [], lookupProviders: [] };
     const d1 = info("d1", { contributes: dec });
     const d2 = info("d2", { contributes: dec });
     const units = [{ text: "hola", isWord: true, key: "hola", wordCount: 1, status: 0, termId: null, sentence: 0, start: 0, end: 4, tokenRange: [0, 0] as [number, number] }];

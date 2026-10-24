@@ -68,6 +68,12 @@ pub struct CommandDecl {
     pub context: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupProviderDecl {
+    pub id: String,
+    pub title: String,
+}
+
 /// Contribution declarations. The host ignores the kinds listed in [`Contributes::unsupported`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +85,7 @@ pub struct Contributes {
     #[serde(default)]
     pub commands: Vec<CommandDecl>,
     #[serde(default)]
-    pub lookup_providers: Vec<Value>,
+    pub lookup_providers: Vec<LookupProviderDecl>,
     #[serde(default)]
     pub importers: Vec<Value>,
     #[serde(default)]
@@ -96,7 +102,6 @@ impl Contributes {
     pub fn unsupported(&self) -> Vec<&'static str> {
         let mut v = Vec::new();
         for (name, n) in [
-            ("lookupProviders", self.lookup_providers.len()),
             ("importers", self.importers.len()),
             ("exporters", self.exporters.len()),
             ("activities", self.activities.len()),
@@ -297,6 +302,11 @@ impl Manifest {
                 return bad(format!("panel '{}': placement '{}' is not supported (only \"sidebar\")", p.id, p.placement));
             }
         }
+        for l in &c.lookup_providers {
+            if !is_ident(&l.id, "-_.") || !seen.insert(("lookupProvider", l.id.as_str())) {
+                return bad(format!("invalid or duplicate lookup provider id '{}'", l.id));
+            }
+        }
         for cmd in &c.commands {
             if !is_ident(&cmd.id, "-_.") || !seen.insert(("command", cmd.id.as_str())) {
                 return bad(format!("invalid or duplicate command id '{}'", cmd.id));
@@ -311,8 +321,8 @@ impl Manifest {
             validate_settings_schema(s)?;
         }
         let runs_code = matches!(self.runtime.ty, RuntimeType::Js | RuntimeType::Wasm);
-        if !runs_code && (!c.decorators.is_empty() || !c.panels.is_empty() || !c.commands.is_empty()) {
-            return bad("decorators, panels and commands need a js or wasm runtime".into());
+        if !runs_code && (!c.decorators.is_empty() || !c.panels.is_empty() || !c.commands.is_empty() || !c.lookup_providers.is_empty()) {
+            return bad("decorators, panels, commands and lookup providers need a js or wasm runtime".into());
         }
         Ok(())
     }
@@ -467,12 +477,15 @@ mod tests {
                 "decorators": [{ "id": "d" }],
                 "panels": [{ "id": "p", "title": "P", "entry": "panel.html" }],
                 "commands": [{ "id": "c", "title": "C", "context": "reader" }],
+                "lookupProviders": [{ "id": "l", "title": "L" }],
                 "importers": [{ "id": "x" }]
             })
         })
         .unwrap();
         assert_eq!(m.contributes.decorators[0].priority, 50);
         assert_eq!(m.contributes.unsupported(), vec!["importers"]);
+        assert_eq!(m.contributes.lookup_providers[0].title, "L");
+        assert!(with(|v| v["contributes"] = serde_json::json!({ "lookupProviders": [{ "id": "l", "title": "A" }, { "id": "l", "title": "B" }] })).is_err());
         assert!(with(|v| v["contributes"] = serde_json::json!({ "panels": [{ "id": "p", "title": "P", "entry": "../p.html" }] })).is_err());
         assert!(with(|v| v["contributes"] = serde_json::json!({ "commands": [{ "id": "c", "title": "C", "context": "nowhere" }] })).is_err());
         assert!(with(|v| v["contributes"] = serde_json::json!({ "decorators": [{ "id": "d" }, { "id": "d" }] })).is_err());

@@ -55,7 +55,10 @@
           />
           <strong>{d.title}</strong>
         </label>
-        <span class="muted">{d.language} · {d.entryCount.toLocaleString()} entries</span>
+        <span class="muted">{d.language} · {d.entryCount.toLocaleString()} entries{#if d.metaCount} · {d.metaCount.toLocaleString()} frequency/pitch rows{/if}</span>
+        {#if !d.rulesImported && languages.find((l) => l.id === d.language)?.scanLookup}
+          <span class="warn" title="This dictionary was imported before conjugation rules were stored">Re-import to enable conjugation lookup</span>
+        {/if}
         <button
           onclick={async () => {
             await api.deleteDictionary(d.id);
@@ -92,5 +95,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+  }
+  .warn {
+    color: var(--role-warn);
+    font-size: 0.85rem;
   }
 </style>

@@ -2,10 +2,11 @@
 // worker's extension id, runs annotators and decorators, and tracks errors (SPEC §6.9.5, §6.9.6).
 
 import { mergeAnnotations, mergeHints, type DecoratorOutput, type MergedHints } from "./hints";
+import { sanitizeSections } from "./lookup";
 import { RpcChannel, RpcFailure, type Port } from "./rpc";
-import type { CoreEvent, ExtInfo, ResolvedView, Token, UnitLike } from "./types";
+import type { CoreEvent, ExtInfo, LookupInput, LookupSection, ResolvedView, Token, UnitLike } from "./types";
 
-export const TIMEOUTS = { activate: 5000, annotate: 2000, decorate: 2000, command: 30000, event: 5000, panel: 10000 } as const;
+export const TIMEOUTS = { activate: 5000, annotate: 2000, decorate: 2000, lookup: 2000, command: 30000, event: 5000, panel: 10000 } as const;
 
 export type ExtStatus = "idle" | "starting" | "ready" | "errored";
 export type ExtError = { message: string; at: number };
@@ -165,7 +166,28 @@ export class ExtensionHost {
         return res && res.value && typeof res.value === "object" ? { id, hints: res.value as Record<number, unknown> } : null;
       }),
     );
-    return mergeHints(units.length, outputs.filter((o): o is DecoratorOutput => o !== null));
+    return mergeHints(units.length, outputs.filter((o): o is DecoratorOutput => o !== null), units.map((u) => u.text));
+  }
+
+  /**
+   * Ask every lookup provider for sections when the term editor opens (SPEC §16.8), 2 s each. Sections come back in
+   * decorator order (providers that aren't decorators follow, in run order). A provider that fails is skipped and
+   * marked errored like any other hook.
+   */
+  async lookup(language: string, input: LookupInput, resolved: ResolvedView): Promise<LookupSection[]> {
+    const rank = (id: string) => {
+      const i = resolved.decoratorOrder.indexOf(id);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    const providers = resolved.active.filter((e) => e.contributes.lookupProviders.length > 0 && e.runtime !== "declarative");
+    const ordered = [...providers].sort((a, b) => rank(a.id) - rank(b.id));
+    const results = await Promise.all(
+      ordered.map(async (info) => {
+        const res = await this.callHook(info, language, "lookup", input, TIMEOUTS.lookup);
+        return res ? sanitizeSections(res.value) : [];
+      }),
+    );
+    return results.flat();
   }
 
   // ---- events, commands, panels ------------------------------------------------------------

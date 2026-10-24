@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { api, lookupHref, STATUSES, statusLabel, type Language, type TermView } from "./api";
+  import { api, lookupHref, STATUSES, statusLabel, type Language, type ScanResult, type TermView } from "./api";
+  import type { LookupSection } from "./ext/types";
+  import PitchGraph from "./PitchGraph.svelte";
 
-  let { language, text, sentence, commands, onCommand, onSaved, onClose, onExtend }: {
+  let { language, text, sentence, scanText = "", lookupSections, commands, onCommand, onSaved, onClose, onExtend }: {
     language: Language;
     text: string;
     sentence: string;
+    /** Text from the selection's start to the end of its sentence, for conjugation-aware lookup (SPEC §16.6). */
+    scanText?: string;
+    /** Sections from lookup providers (SPEC §16.8), asked for once the term is open. */
+    lookupSections?: (tv: TermView) => Promise<LookupSection[]>;
     /** `term`-context commands contributed by extensions (SPEC §6.9.7). */
     commands: { id: string; title: string; ext: { id: string; name: string } }[];
     onCommand: (c: { id: string; title: string; ext: any }) => void;
@@ -14,6 +20,9 @@
   } = $props();
 
   let tv = $state<TermView | null>(null);
+  let scan = $state<ScanResult[]>([]);
+  let sections = $state<LookupSection[]>([]);
+  let sectionGen = 0;
   let status = $state(0);
   let translation = $state("");
   let notes = $state("");
@@ -35,9 +44,25 @@
         notes = v.term?.notes ?? "";
         parents = v.term?.parents.map((p) => p.text) ?? [];
         error = "";
+        const gen = ++sectionGen;
+        lookupSections?.(v)
+          .then((s) => gen === sectionGen && (sections = s))
+          .catch(() => (sections = []));
       })
       .catch((e) => (error = String(e)));
     loaded = t;
+  });
+
+  $effect(() => {
+    const s = scanText;
+    if (!language.scanLookup || !s) {
+      scan = [];
+      return;
+    }
+    api
+      .lookupScan(language.id, s)
+      .then((r) => (scan = r))
+      .catch(() => (scan = []));
   });
 
   async function save(patchStatus?: number) {
@@ -50,6 +75,7 @@
         tv.text,
         { status: patchStatus ?? status, translation, notes },
         parents,
+        [tv.key, tv.wordCount],
       );
       status = t.status;
       onSaved();
@@ -68,9 +94,10 @@
 </script>
 
 <div class="head row">
-  <h3>{tv?.text ?? text}</h3>
+  <h3 lang={language.id}>{tv?.text ?? text}</h3>
   <button onclick={onClose} aria-label="Close">✕</button>
 </div>
+{#if tv?.seenAs}<p class="muted small">seen as <span lang={language.id}>{tv.seenAs}</span></p>{/if}
 {#if tv && tv.wordCount > 1}<p class="muted">Phrase of {tv.wordCount} words</p>{/if}
 <p class="sentence muted">{sentence}</p>
 <div class="row">
@@ -130,7 +157,44 @@
   </div>
 {/if}
 
-{#if tv?.dict.length}
+{#each sections as sec (sec.title)}
+  <div class="dict">
+    <div class="muted small">{sec.title}</div>
+    {#each sec.items as it, k (k)}
+      {#if it.kind === "text"}
+        <div style={it.role ? `color: var(--role-${it.role})` : ""}>{it.text}</div>
+      {:else if it.kind === "kv"}
+        <div><span class="muted">{it.label}</span> {it.text}</div>
+      {:else if it.kind === "pitch"}
+        <PitchGraph reading={it.reading} downstep={it.downstep} />
+      {:else if it.kind === "link"}
+        <button class="linkbtn" onclick={() => api.openUrl(it.url).catch((e) => (error = String(e)))}>{it.label} ↗</button>
+      {/if}
+    {/each}
+  </div>
+{/each}
+
+{#if scan.length}
+  <div class="dict">
+    {#each scan as r, i (i)}
+      <div class="entry">
+        <div class="muted small" lang={language.id}>
+          {r.matched}{#if r.reasons.length} ← {r.lemma} ({r.reasons.join(", ")}){/if}
+        </div>
+        {#each r.entries as e, j (j)}
+          <div class="muted small">{e.dictTitle}</div>
+          <strong lang={language.id}>{e.term}</strong>{#if e.reading} <span class="muted" lang={language.id}>{e.reading}</span>{/if}
+          {#each e.glossary as g}
+            <div class="gloss">
+              <button class="use" onclick={() => useDefinition(g)} title="Add to translation">＋</button>
+              <span>{g}</span>
+            </div>
+          {/each}
+        {/each}
+      </div>
+    {/each}
+  </div>
+{:else if tv?.dict.length}
   <div class="dict">
     {#each tv.dict as r, i (i)}
       <div class="entry">
@@ -224,6 +288,9 @@
   }
   .entry {
     margin-bottom: 0.7rem;
+  }
+  .linkbtn {
+    margin: 0.2rem 0.3rem 0.2rem 0;
   }
   .gloss {
     display: flex;

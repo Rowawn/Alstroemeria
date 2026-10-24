@@ -22,6 +22,8 @@ struct Node {
 pub struct Matcher {
     root: Node,
     max_words: usize,
+    /// Words chain without whitespace between them (ja, SPEC §5.3).
+    spaceless: bool,
 }
 
 impl Matcher {
@@ -41,6 +43,11 @@ impl Matcher {
             node.terminal = true;
         }
         m
+    }
+
+    pub fn with_spaceless(mut self, spaceless: bool) -> Self {
+        self.spaceless = spaceless;
+        self
     }
 
     /// Number of words in the longest term that is a prefix of `norms` (at least 2), if any.
@@ -131,7 +138,11 @@ pub fn build_units(sentences: &[Vec<Token>], matcher: &Matcher, terms: &HashMap<
             let mut ends = vec![k];
             let mut j = k + 1;
             while norms.len() < matcher.max_words && j < sent.len() {
-                if is_space(&sent[j]) && j + 1 < sent.len() && sent[j + 1].is_word {
+                if matcher.spaceless && sent[j].is_word {
+                    norms.push(sent[j].norm.as_str());
+                    ends.push(j);
+                    j += 1;
+                } else if is_space(&sent[j]) && j + 1 < sent.len() && sent[j + 1].is_word {
                     norms.push(sent[j + 1].norm.as_str());
                     ends.push(j + 1);
                     j += 2;

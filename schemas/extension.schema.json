@@ -75,7 +75,15 @@
             }
           }
         },
-        "lookupProviders": { "type": "array", "description": "Accepted, ignored until M5" },
+        "lookupProviders": {
+          "type": "array",
+          "description": "Sections shown in the term editor (SPEC §16.8); the module exports lookup(input)",
+          "items": {
+            "type": "object",
+            "required": ["id", "title"],
+            "properties": { "id": { "type": "string" }, "title": { "type": "string" } }
+          }
+        },
         "importers": { "type": "array", "description": "Accepted, ignored until M4/M8" },
         "exporters": { "type": "array", "description": "Accepted, ignored until M4/M8" },
         "activities": { "type": "array", "description": "Accepted, ignored until M9/M11" },

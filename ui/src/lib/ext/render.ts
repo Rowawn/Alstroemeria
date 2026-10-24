@@ -23,7 +23,8 @@ export function themeVariables(): Record<string, string> {
   const names = ["bg", "fg", "muted", "panel", "border", "accent", "s0", "s1", "s2", "s3", "s4", "s5"];
   const roles = [
     "noun", "verb", "adjective", "adverb", "particle", "function", "name",
-    "accent-high", "accent-low", "accent-drop", "info", "warn", "c1", "c2", "c3", "c4", "c5", "c6",
+    "accent-high", "accent-low", "accent-drop", "accent-heiban", "accent-atamadaka", "accent-nakadaka", "accent-odaka",
+    "info", "warn", "c1", "c2", "c3", "c4", "c5", "c6",
   ].map((r) => `role-${r}`);
   const out: Record<string, string> = {};
   for (const n of [...names, ...roles]) out[`--${n}`] = style.getPropertyValue(`--${n}`).trim();

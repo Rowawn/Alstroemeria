@@ -1,0 +1,24 @@
+{
+  "id": "ko.hanja",
+  "name": "Korean hanja",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "Shows the hanja behind Sino-Korean words, with the meaning of each character, in the term editor. Optional hanja ruby over the text. Data from libhangul (BSD-3-Clause, see DATA-LICENSE).",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["ko"],
+  "provides": ["ko.hanja"],
+  "requires": ["ko.lemma"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "hanja", "priority": 45 }],
+    "lookupProviders": [{ "id": "hanja", "title": "Hanja" }],
+    "settings": {
+      "type": "object",
+      "properties": {
+        "ruby": { "type": "boolean", "title": "Show hanja above the text", "default": false }
+      }
+    }
+  }
+}

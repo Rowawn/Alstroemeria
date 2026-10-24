@@ -8,6 +8,8 @@ use std::path::Path;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_core.sql")),
     (2, include_str!("../migrations/0002_reader.sql")),
+    (3, include_str!("../migrations/0003_dict_rules_meta.sql")),
+    (4, include_str!("../migrations/0004_token_cache.sql")),
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -51,7 +53,7 @@ mod tests {
         for t in [
             "works", "parts", "concepts", "terms", "term_parents", "media", "extension_state",
             "ext_data", "settings", "events", "_changes", "local_settings", "local_peers",
-            "local_dict_dicts", "local_dict_entries",
+            "local_dict_dicts", "local_dict_entries", "local_dict_meta", "local_token_cache",
         ] {
             let n: i64 = conn
                 .query_row("SELECT count(*) FROM sqlite_master WHERE name = ?1", [t], |r| r.get(0))

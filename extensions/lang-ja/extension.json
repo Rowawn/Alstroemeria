@@ -1,0 +1,21 @@
+{
+  "id": "lang.ja",
+  "name": "Japanese",
+  "version": "1.0.0",
+  "kind": "language",
+  "license": "MIT",
+  "language": "ja",
+  "apiVersion": "^1.0",
+  "runtime": { "type": "declarative" },
+  "provides": ["ja.tokenize", "ja.lemma", "ja.reading", "ja.pos", "ja.morphemes"],
+  "declarative": {
+    "tokenizer": { "engine": "lindera-ipadic" },
+    "termKey": "lemma",
+    "deinflection": "deinflect.json",
+    "sentenceEnd": "。！？!?",
+    "rtl": false,
+    "lookupUrls": [
+      { "name": "Jisho", "url": "https://jisho.org/search/###" }
+    ]
+  }
+}

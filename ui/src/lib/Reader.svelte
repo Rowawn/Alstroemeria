@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { api, mediaUrl, type Language, type PartView, type Unit } from "./api";
+  import { api, mediaUrl, type Language, type PartView, type TermView, type Unit } from "./api";
   import { clock, cueAt, groupUnits, repeatTarget } from "./cues";
   import { extHost, readerBridge } from "./ext";
   import type { MergedHints } from "./ext/hints";
   import { hintStyle } from "./ext/render";
-  import type { ExtInfo, ResolvedView } from "./ext/types";
+  import type { ExtInfo, LookupSection, ResolvedView, Token } from "./ext/types";
   import PanelHost from "./PanelHost.svelte";
   import TermEditor from "./TermEditor.svelte";
 
@@ -27,6 +27,7 @@
   // Extensions (SPEC §6.9.6): annotators run once per part, decorators after every term change.
   let resolved = $state<ResolvedView | null>(null);
   let hints = $state<MergedHints[]>([]);
+  let annotated: Token[] = []; // tokens with annotations, for lookup providers
   let runGen = 0;
   let openPanelRef = $state<{ ext: ExtInfo; panelId: string } | null>(null);
   let detached = $state<{ text: string } | null>(null);
@@ -46,6 +47,17 @@
   const selectedText = $derived(range ? units.slice(range.lo, range.hi + 1).map((u) => u.text).join("") : "");
   const sentenceText = $derived(
     range ? units.filter((u) => u.sentence === units[range.lo].sentence).map((u) => u.text).join("").trim() : "",
+  );
+  // From the selection's first word to the end of its sentence, for conjugation-aware lookup (SPEC §16.6).
+  const scanText = $derived(
+    range
+      ? units
+          .slice(range.lo)
+          .filter((u) => u.sentence === units[range.lo].sentence)
+          .map((u) => u.text)
+          .join("")
+          .slice(0, 60)
+      : "",
   );
   // Media (SPEC §8): the player, the current cue and the repeat lock.
   let player = $state<HTMLMediaElement | null>(null);
@@ -161,6 +173,7 @@
       extHost.retain(new Set(r.active.map((e) => e.id)));
       const tokens = await extHost.annotate(partId, lang, v.tokens, r);
       if (gen !== runGen) return;
+      annotated = tokens;
       const merged = await extHost.decorate(lang, v.units, tokens, r);
       if (gen !== runGen) return;
       hints = merged;
@@ -258,6 +271,20 @@
     else onBack();
   }
 
+  /** Sections from lookup providers for the open selection (SPEC §16.8). */
+  async function lookupSections(tv: TermView): Promise<LookupSection[]> {
+    if (!view || !resolved || !range) return [];
+    const toks = (annotated.length ? annotated : view.tokens).slice(units[range.lo].tokenRange[0], units[range.hi].tokenRange[1] + 1);
+    const first = toks.find((t) => t.isWord);
+    const input = {
+      language: view.work.language,
+      unit: { text: selectedText, key: tv.key, lemma: first?.lemma, status: tv.term?.status ?? 0 },
+      tokens: $state.snapshot(toks) as Token[],
+      sentence: sentenceText,
+    };
+    return extHost.lookup(view.work.language, input, $state.snapshot(resolved) as ResolvedView);
+  }
+
   type Cmd = { ext: ExtInfo; id: string; title: string };
   function commandsFor(context: "term" | "reader"): Cmd[] {
     return (resolved?.active ?? []).flatMap((ext) =>
@@ -307,7 +334,7 @@
             style={hintStyle(h)}
             title={h?.tooltip}
             data-i={i}
-            >{#if h?.ruby}<ruby>{u.text}<rt>{h.ruby}</rt></ruby>{:else}{u.text}{/if}{#each h?.badges ?? [] as b}<sup
+            >{#if h?.rubySegments}{#each h.rubySegments as seg}{#if seg.rt}<ruby>{seg.base}<rt>{seg.rt}</rt></ruby>{:else}{seg.base}{/if}{/each}{:else if h?.ruby}<ruby>{u.text}<rt>{h.ruby}</rt></ruby>{:else}{u.text}{/if}{#each h?.badges ?? [] as b}<sup
                 class="badge"
                 style={b.role ? `color: var(--role-${b.role})` : ""}>{b.text}</sup
               >{/each}</span
@@ -367,7 +394,7 @@
       {/if}
 
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="text" class:cued={!!cues} dir={view.rtl ? "rtl" : "ltr"} onmouseup={onPointerUp}>
+      <div class="text" class:cued={!!cues} class:cjk={language?.spaceless} lang={language?.id} dir={view.rtl ? "rtl" : "ltr"} onmouseup={onPointerUp}>
         {#if cues}
           {#each cues as c, k}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -408,6 +435,8 @@
               <TermEditor
                 {language}
                 text={selectedText}
+                {scanText}
+                {lookupSections}
                 sentence={sentenceText}
                 commands={commandsFor("term")}
                 onCommand={(c) => runCommand(c, "term")}
@@ -461,6 +490,14 @@
     font-size: 1.15rem;
     margin: 1rem 0;
     user-select: text;
+  }
+  /* SPEC §16.9: no inter-word spaces are added for CJK, and line breaks follow strict rules. */
+  .text.cjk,
+  .text:lang(ko) {
+    line-break: strict;
+  }
+  .text:lang(ko) {
+    word-break: keep-all;
   }
   .player {
     position: sticky;

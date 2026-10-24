@@ -2,12 +2,14 @@
 //! Pure logic: no database, no Tauri.
 
 pub mod cues;
+pub mod deinflect;
 pub mod export;
 pub mod import;
 pub mod lang;
+pub mod morph;
 pub mod reader;
 
-pub use lang::{LanguageDef, LookupUrl, Token};
+pub use lang::{LanguageDef, LookupUrl, TermInfo, TermKey, Token};
 pub use reader::{Matcher, TermState, Unit};
 
 #[derive(Debug, thiserror::Error)]

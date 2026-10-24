@@ -37,7 +37,7 @@ const crc32 = (b: Uint8Array) => {
   return (c ^ 0xffffffff) >>> 0;
 };
 
-function makeZip(files: Record<string, string | Uint8Array>): File {
+export function makeZip(files: Record<string, string | Uint8Array>): File {
   const enc = new TextEncoder();
   const parts: Uint8Array[] = [];
   const central: Uint8Array[] = [];

@@ -1,0 +1,31 @@
+{
+  "id": "ja.pitch",
+  "name": "Japanese pitch accent",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "Colours words by pitch pattern (heiban, atamadaka, nakadaka, odaka) or shows the downstep, and draws a pitch graph in the term editor. Needs a pitch dictionary (such as Kanjium, imported in Dictionaries); nothing is bundled.",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["ja"],
+  "permissions": ["dict:read"],
+  "provides": ["ja.pitch"],
+  "requires": ["ja.reading"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "pitch", "priority": 30 }],
+    "lookupProviders": [{ "id": "pitch", "title": "Pitch accent" }],
+    "settings": {
+      "type": "object",
+      "properties": {
+        "display": {
+          "type": "string",
+          "title": "In the text",
+          "enum": ["colour", "badge", "off"],
+          "default": "colour",
+          "description": "colour the word by pattern, show the downstep number as a badge, or leave the text alone"
+        }
+      }
+    }
+  }
+}

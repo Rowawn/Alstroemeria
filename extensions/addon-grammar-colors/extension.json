@@ -1,0 +1,28 @@
+{
+  "id": "addon.grammar-colors",
+  "name": "Grammar colours",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "Colours words by part of speech. Works for any language whose extension provides part-of-speech data (currently Japanese and Korean).",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["*"],
+  "requires": ["*.pos"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "grammar", "priority": 60 }],
+    "settings": {
+      "type": "object",
+      "properties": {
+        "noun": { "type": "boolean", "title": "Nouns", "default": false },
+        "name": { "type": "boolean", "title": "Proper nouns", "default": false },
+        "verb": { "type": "boolean", "title": "Verbs", "default": true },
+        "adjective": { "type": "boolean", "title": "Adjectives", "default": true },
+        "adverb": { "type": "boolean", "title": "Adverbs", "default": true },
+        "particle": { "type": "boolean", "title": "Particles", "default": true },
+        "function": { "type": "boolean", "title": "Auxiliaries, conjunctions and endings", "default": false }
+      }
+    }
+  }
+}

@@ -2,19 +2,27 @@
 
 export type Role =
   | "noun" | "verb" | "adjective" | "adverb" | "particle" | "function" | "name"
-  | "accent-high" | "accent-low" | "accent-drop" | "info" | "warn"
+  | "accent-high" | "accent-low" | "accent-drop"
+  | "accent-heiban" | "accent-atamadaka" | "accent-nakadaka" | "accent-odaka"
+  | "info" | "warn"
   | "c1" | "c2" | "c3" | "c4" | "c5" | "c6";
 
 export const ROLES: readonly Role[] = [
   "noun", "verb", "adjective", "adverb", "particle", "function", "name",
-  "accent-high", "accent-low", "accent-drop", "info", "warn",
+  "accent-high", "accent-low", "accent-drop",
+  "accent-heiban", "accent-atamadaka", "accent-nakadaka", "accent-odaka",
+  "info", "warn",
   "c1", "c2", "c3", "c4", "c5", "c6",
 ];
 
 export type UnderlineStyle = "solid" | "dotted" | "wavy" | "double";
 
+export type RubySegment = { base: string; rt?: string };
+
 export type RenderHint =
   | { kind: "ruby"; text: string }
+  // Segmented form (SPEC §16.9): the bases must concatenate to the unit's text, else the hint is ignored.
+  | { kind: "ruby"; segments: RubySegment[] }
   | { kind: "color"; role: Role }
   | { kind: "underline"; role: Role; style?: UnderlineStyle }
   | { kind: "badge"; text: string; role?: Role }
@@ -51,6 +59,7 @@ export type Contributes = {
   decorators: { id: string; priority: number }[];
   panels: { id: string; title: string; entry: string; placement: string }[];
   commands: { id: string; title: string; context?: "reader" | "term" | "global" }[];
+  lookupProviders: { id: string; title: string }[];
   settings?: { properties?: Record<string, SettingSchema> } | null;
 };
 
@@ -118,3 +127,17 @@ export type CoreEvent = {
 };
 
 export type RpcError = { code: string; message: string };
+
+// Lookup providers (SPEC §16.8).
+export type LookupItem =
+  | { kind: "text"; text: string; role?: Role }
+  | { kind: "kv"; label: string; text: string }
+  | { kind: "pitch"; reading: string; downstep: number }
+  | { kind: "link"; label: string; url: string };
+export type LookupSection = { title: string; items: LookupItem[] };
+export type LookupInput = {
+  language: string;
+  unit: { text: string; key: string; lemma?: string; status: number };
+  tokens: Token[];
+  sentence: string;
+};

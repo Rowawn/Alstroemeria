@@ -1,0 +1,21 @@
+{
+  "id": "lang.ko",
+  "name": "Korean",
+  "version": "1.0.0",
+  "kind": "language",
+  "license": "MIT",
+  "language": "ko",
+  "apiVersion": "^1.0",
+  "runtime": { "type": "declarative" },
+  "provides": ["ko.tokenize", "ko.lemma", "ko.pos", "ko.morphemes"],
+  "declarative": {
+    "tokenizer": { "engine": "lindera-ko-dic" },
+    "termKey": "lemma",
+    "sentenceEnd": ".!?…。",
+    "rtl": false,
+    "lookupUrls": [
+      { "name": "Naver", "url": "https://en.dict.naver.com/#/search?query=###" },
+      { "name": "Wiktionary", "url": "https://en.wiktionary.org/wiki/###" }
+    ]
+  }
+}

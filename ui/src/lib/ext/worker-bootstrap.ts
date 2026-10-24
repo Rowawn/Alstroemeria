@@ -8,6 +8,7 @@ type Hooks = {
   activate?: (ctx: unknown) => unknown;
   annotate?: (input: unknown) => unknown;
   decorate?: (input: unknown) => unknown;
+  lookup?: (input: unknown) => unknown;
   commands?: Record<string, (args: unknown) => unknown>;
   onEvent?: (event: unknown) => unknown;
   onSettingsChanged?: (settings: unknown) => unknown;
@@ -45,7 +46,10 @@ const alst = {
     emit: (type: string, payload?: unknown) => call("events.emit", { type, payload }),
     query: (q?: unknown) => call("events.query", q ?? {}),
   },
-  dict: { lookup: (language: string, query: string) => call("dict.lookup", { language, query }) },
+  dict: {
+    lookup: (language: string, query: string) => call("dict.lookup", { language, query }),
+    meta: (language: string, q: { term?: string; terms?: string[]; reading?: string; mode: "freq" | "pitch" }) => call("dict.meta", { language, ...q }),
+  },
   net: { fetch: (url: string, init?: Record<string, unknown>) => call("net.fetch", { url, ...init }) },
   ui: {
     toast: (message: string, opts?: { kind?: "info" | "error" }) => call("ui.toast", { message, kind: opts?.kind }),
@@ -80,6 +84,8 @@ async function dispatch(method: string, params: unknown): Promise<unknown> {
       return (await hooks.annotate?.(p)) ?? {};
     case "decorate":
       return (await hooks.decorate?.(p)) ?? {};
+    case "lookup":
+      return (await hooks.lookup?.(p)) ?? [];
     case "command": {
       const fn = hooks.commands?.[p.id as string];
       if (!fn) throw new RpcFailure("no_such_command", `no command '${String(p.id)}'`);

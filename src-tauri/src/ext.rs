@@ -15,6 +15,7 @@ fn reload(state: &AppState) -> Res<()> {
     *reg = Registry::load(&alst_ext::registry::BUNDLED, Some(&state.ext_root));
     let store = state.store()?;
     *state.languages.write().map_err(err)? = host::language_defs(&reg, &store).map_err(err)?;
+    *state.deinflectors.write().map_err(err)? = host::deinflectors(&reg, &store).map_err(err)?;
     Ok(())
 }
 

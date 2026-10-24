@@ -83,3 +83,39 @@ describe("mergeAnnotations", () => {
     expect(tokens[0].ann).toEqual({});
   });
 });
+
+describe("segmented ruby (SPEC §16.9)", () => {
+  const seg = (segments: unknown) => [{ kind: "ruby", segments }];
+
+  it("accepts segments whose bases concatenate to the unit text", () => {
+    expect(sanitizeHints(seg([{ base: "食", rt: "た" }, { base: "べる" }]), "食べる")).toEqual([
+      { kind: "ruby", segments: [{ base: "食", rt: "た" }, { base: "べる" }] },
+    ]);
+  });
+
+  it("ignores them when the bases don't match, are empty, malformed, too many, or there is no unit text", () => {
+    expect(sanitizeHints(seg([{ base: "食", rt: "た" }]), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg([{ base: "食べる" }, { base: "" }]), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg([{ base: "食べる", rt: 5 }]), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg([{ rt: "た" }]), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg([]), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg("nope"), "食べる")).toEqual([]);
+    expect(sanitizeHints(seg(Array.from({ length: 33 }, () => ({ base: "a" }))), "a".repeat(33))).toEqual([]);
+    expect(sanitizeHints(seg([{ base: "食べる" }]))).toEqual([]);
+  });
+
+  it("merges: the first ruby of either kind wins; a rejected segmented ruby doesn't block a later plain one", () => {
+    const good = [{ kind: "ruby", segments: [{ base: "日本語", rt: "にほんご" }] }];
+    const [a] = mergeHints(1, [{ id: "a", hints: { 0: good } }, { id: "b", hints: { 0: [{ kind: "ruby", text: "x" }] } }], ["日本語"]);
+    expect(a.rubySegments).toEqual([{ base: "日本語", rt: "にほんご" }]);
+    expect(a.ruby).toBeUndefined();
+    const [b] = mergeHints(1, [{ id: "a", hints: { 0: good } }, { id: "b", hints: { 0: [{ kind: "ruby", text: "x" }] } }], ["別の語"]);
+    expect(b.rubySegments).toBeUndefined();
+    expect(b.ruby).toBe("x");
+  });
+
+  it("knows the new accent roles", () => {
+    for (const r of ["accent-heiban", "accent-atamadaka", "accent-nakadaka", "accent-odaka"])
+      expect(sanitizeHints([{ kind: "color", role: r }])).toEqual([{ kind: "color", role: r }]);
+  });
+});

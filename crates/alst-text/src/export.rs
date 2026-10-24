@@ -1,6 +1,6 @@
 //! Example sentences for export (SPEC §11): find the first sentence containing each wanted term.
 
-use crate::{LanguageDef, Matcher, reader};
+use crate::{LanguageDef, reader};
 use std::collections::{HashMap, HashSet};
 
 fn escape_html(s: &str) -> String {
@@ -14,7 +14,7 @@ pub fn find_examples<'a>(
     texts: impl IntoIterator<Item = &'a str>,
     wanted: &HashSet<String>,
 ) -> HashMap<String, String> {
-    let matcher = Matcher::new(wanted.iter().map(String::as_str));
+    let matcher = lang.matcher(wanted.iter().map(String::as_str));
     let none = HashMap::new();
     let mut found: HashMap<String, String> = HashMap::new();
     for text in texts {

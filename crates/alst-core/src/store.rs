@@ -772,6 +772,32 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Cached tokenizer output for a part if its fingerprint still matches (SPEC §5.3).
+    pub fn token_cache_get(&self, part_id: &str, fingerprint: &str) -> Option<String> {
+        let tokens: Option<String> = self
+            .conn
+            .query_row("SELECT tokens FROM local_token_cache WHERE part_id = ?1 AND fingerprint = ?2", params![part_id, fingerprint], |r| r.get(0))
+            .ok();
+        if tokens.is_some() {
+            let _ = self.conn.execute("UPDATE local_token_cache SET used_at = ?1 WHERE part_id = ?2", params![crate::hlc::wall_ms() as i64, part_id]);
+        }
+        tokens
+    }
+
+    /// Store tokenizer output for a part, keeping the `keep` most recently used rows. Failures are ignored:
+    /// the cache is an optimisation.
+    pub fn token_cache_put(&self, part_id: &str, fingerprint: &str, tokens: &str, keep: i64) {
+        let _ = self.conn.execute(
+            "INSERT INTO local_token_cache (part_id, fingerprint, tokens, used_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(part_id) DO UPDATE SET fingerprint = ?2, tokens = ?3, used_at = ?4",
+            params![part_id, fingerprint, tokens, crate::hlc::wall_ms() as i64],
+        );
+        let _ = self.conn.execute(
+            "DELETE FROM local_token_cache WHERE part_id NOT IN (SELECT part_id FROM local_token_cache ORDER BY used_at DESC LIMIT ?1)",
+            params![keep],
+        );
+    }
+
     /// Connection for device-local `local_*` tables (dictionaries). Never use it for synced tables.
     pub fn local_conn(&self) -> &Connection {
         &self.conn
@@ -1224,6 +1250,24 @@ mod tests {
         assert_eq!(s.events_query(None, None, 2).unwrap().len(), 2);
         assert_eq!(s.events_query(None, Some(i64::MAX / 100000), 10).unwrap().len(), 0);
         assert!(fresh[0].1.ts > 1_600_000_000_000);
+    }
+
+    #[test]
+    fn token_cache_matches_on_fingerprint_and_keeps_the_most_recent() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.token_cache_get("p1", "f1"), None);
+        s.token_cache_put("p1", "f1", "[1]", 2);
+        assert_eq!(s.token_cache_get("p1", "f1").as_deref(), Some("[1]"));
+        assert_eq!(s.token_cache_get("p1", "other"), None, "a different fingerprint is a miss");
+        s.token_cache_put("p1", "f2", "[2]", 2);
+        assert_eq!(s.token_cache_get("p1", "f1"), None, "replaced in place");
+        assert_eq!(s.token_cache_get("p1", "f2").as_deref(), Some("[2]"));
+        s.conn().execute("UPDATE local_token_cache SET used_at = 1", []).unwrap();
+        s.token_cache_put("p2", "f", "[a]", 2);
+        s.token_cache_put("p3", "f", "[b]", 2);
+        let n: i64 = s.conn().query_row("SELECT count(*) FROM local_token_cache", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "bounded");
+        assert_eq!(s.token_cache_get("p1", "f2"), None, "the oldest went");
     }
 
     #[test]

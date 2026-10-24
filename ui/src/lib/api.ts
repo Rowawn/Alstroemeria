@@ -3,7 +3,18 @@ import type { Timing } from "./cues";
 import type { ExtInfo, ExtensionList, PackageInfo, ResolvedView, Token, UnitLike } from "./ext/types";
 
 export type LookupUrl = { name: string; url: string };
-export type Language = { id: string; name: string; rtl: boolean; lookupUrls: LookupUrl[] };
+export type Language = {
+  id: string;
+  name: string;
+  rtl: boolean;
+  lookupUrls: LookupUrl[];
+  /** Words are keyed by lemma (SPEC §16.3). */
+  lemmaKeys: boolean;
+  /** Clicked text is looked up with `lookupScan` (SPEC §16.6). */
+  scanLookup: boolean;
+  /** No spaces between words. */
+  spaceless: boolean;
+};
 export type Work = {
   id: string;
   language: string;
@@ -73,9 +84,36 @@ export type DictResult = {
   score: number;
   glossary: string[];
 };
-export type TermView = { key: string; text: string; wordCount: number; term: Term | null; dict: DictResult[] };
+export type TermView = {
+  key: string;
+  text: string;
+  /** The text as read, when it differs from `text` (the lemma). */
+  seenAs: string | null;
+  wordCount: number;
+  term: Term | null;
+  dict: DictResult[];
+};
+export type ScanResult = {
+  matched: string;
+  lemma: string;
+  reading: string;
+  reasons: string[];
+  entries: DictResult[];
+  frequency: number | null;
+};
+export type MetaResult = { dictId: number; dictTitle: string; term: string; reading: string; mode: string; data: any };
 export type TermPatch = { status?: number; translation?: string; reading?: string; notes?: string; lemma?: string };
-export type DictInfo = { id: number; title: string; revision: string | null; language: string; enabled: boolean; entryCount: number };
+export type DictInfo = {
+  id: number;
+  title: string;
+  revision: string | null;
+  language: string;
+  enabled: boolean;
+  entryCount: number;
+  /** False for dictionaries imported before conjugation rules were stored: re-import to enable them. */
+  rulesImported: boolean;
+  metaCount: number;
+};
 
 export const STATUSES = [0, 1, 2, 3, 4, 5, 98, 99] as const;
 export const statusLabel = (s: number) =>
@@ -131,8 +169,12 @@ export const api = {
   partView: (partId: string) => invoke<PartView>("get_part_view", { partId }),
   openTerm: (language: string, text: string, logLookup: boolean) =>
     invoke<TermView>("open_term", { language, text, logLookup }),
-  saveTerm: (language: string, text: string, patch: TermPatch, parents?: string[]) =>
-    invoke<Term>("save_term", { language, text, patch, parents: parents ?? null }),
+  saveTerm: (language: string, text: string, patch: TermPatch, parents?: string[], key?: [string, number]) =>
+    invoke<Term>("save_term", { language, text, patch, parents: parents ?? null, key: key ?? null }),
+  lookupScan: (language: string, text: string, maxLen?: number) =>
+    invoke<ScanResult[]>("lookup_scan", { language, text, maxLen: maxLen ?? null }),
+  dictMeta: (language: string, term: string, mode: "freq" | "pitch", reading?: string) =>
+    invoke<MetaResult[]>("dict_meta", { language, term, reading: reading ?? null, mode }),
   finishPart: (partId: string, markKnown: boolean, durationMs: number) =>
     invoke<number>("finish_part", { partId, markKnown, durationMs }),
   dictionaries: () => invoke<DictInfo[]>("list_dictionaries"),

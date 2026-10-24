@@ -1,0 +1,28 @@
+{
+  "id": "ja.furigana",
+  "name": "Japanese furigana",
+  "version": "1.0.0",
+  "kind": "addon",
+  "license": "MIT",
+  "description": "Shows readings over the kanji of Japanese words, aligned so okurigana stay bare (食べる gets た over 食 only).",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["ja"],
+  "requires": ["ja.reading"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "decorators": [{ "id": "furigana", "priority": 40 }],
+    "settings": {
+      "type": "object",
+      "properties": {
+        "show": {
+          "type": "string",
+          "title": "Show furigana for",
+          "enum": ["all", "unknown", "learning", "none"],
+          "default": "unknown",
+          "description": "all words; unknown (status New or 1); learning (status New to 3); or none"
+        }
+      }
+    }
+  }
+}

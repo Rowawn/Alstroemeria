@@ -1,12 +1,30 @@
 // Render-hint validation and layering (SPEC §6.9.6.1).
 
-import { ROLES, type RenderHint, type Role, type UnderlineStyle } from "./types";
+import { ROLES, type RenderHint, type Role, type RubySegment, type UnderlineStyle } from "./types";
 
 const STYLES: UnderlineStyle[] = ["solid", "dotted", "wavy", "double"];
 const roleOk = (r: unknown): r is Role => typeof r === "string" && (ROLES as readonly string[]).includes(r);
 
-/** Keep only well-formed hints of kinds this host knows; unknown kinds are ignored for forward compatibility. */
-export function sanitizeHints(raw: unknown): RenderHint[] {
+export const MAX_RUBY_SEGMENTS = 32;
+
+/** A segmented ruby is valid only if its bases concatenate to the unit text (SPEC §16.9). */
+function sanitizeSegments(raw: unknown, unitText: string | undefined): RubySegment[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_RUBY_SEGMENTS || unitText === undefined) return null;
+  const out: RubySegment[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== "object") return null;
+    const { base, rt } = s as Record<string, unknown>;
+    if (typeof base !== "string" || base === "" || (rt !== undefined && typeof rt !== "string")) return null;
+    out.push(rt ? { base, rt: rt.slice(0, 64) } : { base });
+  }
+  return out.map((s) => s.base).join("") === unitText ? out : null;
+}
+
+/**
+ * Keep only well-formed hints of kinds this host knows; unknown kinds are ignored for forward compatibility.
+ * `unitText` is the text of the unit the hints are for (needed to validate segmented ruby).
+ */
+export function sanitizeHints(raw: unknown, unitText?: string): RenderHint[] {
   if (!Array.isArray(raw)) return [];
   const out: RenderHint[] = [];
   for (const h of raw) {
@@ -14,7 +32,10 @@ export function sanitizeHints(raw: unknown): RenderHint[] {
     const o = h as Record<string, unknown>;
     switch (o.kind) {
       case "ruby":
-        if (typeof o.text === "string" && o.text) out.push({ kind: "ruby", text: o.text.slice(0, 64) });
+        if ("segments" in o) {
+          const segments = sanitizeSegments(o.segments, unitText);
+          if (segments) out.push({ kind: "ruby", segments });
+        } else if (typeof o.text === "string" && o.text) out.push({ kind: "ruby", text: o.text.slice(0, 64) });
         break;
       case "color":
         if (roleOk(o.role)) out.push({ kind: "color", role: o.role });
@@ -40,6 +61,7 @@ export function sanitizeHints(raw: unknown): RenderHint[] {
 
 export type MergedHints = {
   ruby?: string;
+  rubySegments?: RubySegment[];
   color?: Role;
   underline?: { role: Role; style: UnderlineStyle };
   badges: { text: string; role?: Role }[];
@@ -54,7 +76,7 @@ export const MAX_BADGES = 2;
  * Layer hints from several decorators. `outputs` must already be in decorator order: for `ruby`, `color`
  * and `underline` the first decorator that sets one wins; `badge` and `tooltip` accumulate.
  */
-export function mergeHints(unitCount: number, outputs: DecoratorOutput[]): MergedHints[] {
+export function mergeHints(unitCount: number, outputs: DecoratorOutput[], unitTexts?: string[]): MergedHints[] {
   const merged: MergedHints[] = Array.from({ length: unitCount }, () => ({ badges: [] }));
   const tooltips: string[][] = Array.from({ length: unitCount }, () => []);
   for (const out of outputs) {
@@ -62,8 +84,13 @@ export function mergeHints(unitCount: number, outputs: DecoratorOutput[]): Merge
       const i = Number(key);
       if (!Number.isInteger(i) || i < 0 || i >= unitCount) continue;
       const m = merged[i];
-      for (const h of sanitizeHints(raw)) {
-        if (h.kind === "ruby") m.ruby ??= h.text;
+      for (const h of sanitizeHints(raw, unitTexts?.[i])) {
+        if (h.kind === "ruby") {
+          if (m.ruby === undefined && m.rubySegments === undefined) {
+            if ("segments" in h) m.rubySegments = h.segments;
+            else m.ruby = h.text;
+          }
+        }
         else if (h.kind === "color") m.color ??= h.role;
         else if (h.kind === "underline") m.underline ??= { role: h.role, style: h.style ?? "solid" };
         else if (h.kind === "badge") m.badges.push({ text: h.text, role: h.role });

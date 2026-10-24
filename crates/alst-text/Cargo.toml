@@ -14,3 +14,9 @@ roxmltree = "0.20"
 scraper = "0.23"
 ureq = "3"
 encoding_rs = "0.8"
+lindera = { version = "=6.2.0", default-features = false, optional = true }
+
+[features]
+default = ["lang-ja", "lang-ko"]
+lang-ja = ["dep:lindera", "lindera/embed-ipadic"]
+lang-ko = ["dep:lindera", "lindera/embed-ko-dic"]
