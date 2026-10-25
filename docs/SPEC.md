@@ -915,6 +915,8 @@ This section adds morphological languages. It extends §5 (tokens), §6.9 (exten
   (on by default). This is the simplest path that works offline on every platform.
   Record the installer/APK size increase in the roadmap; if the installer exceeds ~60 MB,
   M7 moves dictionaries to downloadable "language data" (pinned URL + sha256, or import from file).
+  **Decided for M7:** they move to downloadable language data (§17.3). Release builds no longer embed them;
+  the embed features remain for tests and development only.
 - Pinned: `lindera =6.2.0` (default features off) with `embed-ipadic` / `embed-ko-dic`. The dictionary crates' `build.rs`
   **download the pinned dictionary source at build time** (md5-checked, from lindera.dev), so the first build needs network;
   later builds use cargo's cache. The tokenizer engine names in a language manifest are `lindera-ipadic` and
@@ -1073,3 +1075,91 @@ extension works with any TSV, so the data can be swapped or dropped |
 
 Mora counting for pitch: each kana is one mora except small ゃゅょぁぃぅぇぉ (attach to the previous);
 ー, っ and ん count. Pattern: downstep 0 → heiban; 1 → atamadaka; = mora count → odaka; else nakadaka.
+
+## 17. Releases (M7)
+
+Decisions (user, M7): the repository becomes a **public GitHub repo**; GitHub Actions builds every
+platform and GitHub Releases hosts installers, the update feed and language data. **No paid code
+signing for now** (macOS and Windows show first-run warnings; the README explains how to open the
+app). Japanese and Korean dictionaries become **downloadable language data**. The name stays
+**Alstroemeria** and the app id stays `com.alstroemeria.app` permanently.
+
+### 17.1 Versions and artifacts
+
+- One version for the app (semver, starting `0.1.0`), written by `scripts/bump-version.mjs` into
+  `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (crates keep their own
+  versions). Android `versionCode` = `major*10000 + minor*100 + patch`. Tag `v<version>` starts a release.
+- `CHANGELOG.md` (Keep a Changelog style); the release notes are its section for that version.
+
+| Platform | Artifacts | Notes |
+|---|---|---|
+| macOS | universal `.dmg` (x86_64 + arm64), updater `.app.tar.gz` | ad-hoc signed (`signingIdentity: "-"`), not notarized |
+| Windows | NSIS `-setup.exe` (per-user, no admin), updater bundle | unsigned; WebView2 via the download bootstrapper |
+| Linux | `.AppImage` (updater), `.deb` | built on the oldest supported Ubuntu runner for glibc reach |
+| Android | APKs split per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and a universal APK; an `.aab` for a future Play listing | signed with the release key |
+
+### 17.2 Keys and secrets
+
+Never in the repo. Generated once on the user's Mac, backed up by the user, and entered by the user
+as GitHub Actions secrets:
+
+- **Updater key** (`tauri signer generate`, ed25519): private key at `~/.alstroemeria/updater.key`;
+  the public key goes in `tauri.conf.json`. Secrets `TAURI_SIGNING_PRIVATE_KEY` and its password.
+  Losing it means existing installs can never auto-update again.
+- **Android release keystore** (`keytool`, RSA 4096, 30+ years): `~/.alstroemeria/release.jks`.
+  Gradle reads it from `src-tauri/gen/android/keystore.properties` (gitignored) locally, or from the
+  secrets `ANDROID_KEYSTORE_B64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` in CI. Losing it means
+  Android users must uninstall to update. Test builds signed with the debug key cannot be updated by a
+  release build: sync the phone to a desktop first, uninstall, install the release, then re-pair
+  (§9), and the library comes back.
+
+### 17.3 Language data
+
+A **language data package** holds a compiled Lindera dictionary: a zip with `langdata.json`
+(`{id, engine, version, lindera, files}`), the compiled dictionary files and the dictionary's licence.
+Ids: `ja-ipadic`, `ko-kodic`.
+
+- **Built** by `scripts/build-langdata.sh` (lindera's own dictionary build, same pinned version as the
+  app) and published by a manual CI workflow as assets of a release tagged
+  `langdata-<id>-<version>`. App releases don't re-upload it.
+- **Pinned** in `crates/alst-text/langdata.json`: `{id, version, url, sha256, size}` per package. The app
+  only accepts a package whose sha256 matches.
+- **Installed** into `<data>/langdata/<id>/<version>/` (unzipped; path checks as for `.alext`).
+  `alst-text` loads the Lindera dictionary from that directory (memory-mapped if Lindera allows) when a
+  language that needs it first tokenizes. Without it, a language using `lindera-ipadic`/`lindera-ko-dic`
+  shows "Japanese needs its language data (≈ N MB). Download now" in the reader and in Settings →
+  Languages, with progress, resume after interruption and cancel. "Import from file" accepts the same zip
+  for offline machines.
+- **LAN sync:** an installed package is also stored as media (kind `langdata`, always transferred like
+  dictionaries, §9.6), so a paired device can get it from a peer instead of the internet. Packages are
+  device-level assets: a synced `langdata` row is not needed, because a device fetches the package it
+  needs when it opens a language that needs it and a peer advertises the hash.
+- Release builds turn off `embed-ipadic`/`embed-ko-dic`. Tests and `tauri dev` may keep them on
+  (feature `embed-langdata`) so the suite needs no download.
+- Licences of the data (IPADIC, ko-dic Apache-2.0) ship inside each package and in About.
+
+### 17.4 Updates
+
+- **Desktop:** `tauri-plugin-updater` reads
+  `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` (written by the release
+  workflow), verified with the updater public key. Checks on start and every 24 h; Settings has
+  "Check automatically" (default on) and "Check now". An update shows a banner with the changelog
+  section; installing restarts the app (`tauri-plugin-process`). Never installs silently.
+- **Android:** no self-update. The app reads the same `latest.json` and, when a newer version exists,
+  shows a banner that opens the release page in the browser to download the APK for its ABI.
+- Update checks are the app's only internet traffic besides importers and language data; Settings
+  says so, and turning checks off stops it.
+
+### 17.5 CI (`.github/workflows`)
+
+- `ci.yml` on push and pull request: `cargo test --workspace`, `npm test`, `svelte-check`,
+  `cargo deny check licenses` (fails on GPL-family licences, §14), on `ubuntu-latest`; plus a
+  `cargo check` for `x86_64-pc-windows-msvc` on `windows-latest`.
+- `release.yml` on tag `v*`: `tauri-action` matrix (macOS universal, Windows, Linux) plus an Android
+  job; uploads to a **draft** release with `latest.json`. The user reviews and publishes the draft.
+- `langdata.yml`, manual: builds and uploads one language data package.
+
+### 17.6 Notices
+
+`THIRD-PARTY-NOTICES.md` is generated (`cargo about` for Rust, a license listing for npm) and shipped in
+every bundle; About links to it, together with the data licences (IPADIC, ko-dic, hanja TSV).

@@ -12,7 +12,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 4 | **Media** ✅ (see status below) | Sonnet | Audio/video + SRT/VTT/LRC cue-synced reader; podcast RSS importer; YouTube subtitles (desktop) |
 | 5 | **CJK languages** | Opus design ✅, Sonnet build | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
 | 6 | **LAN sync** ✅ (see status below) | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
-| 7 | **Releases** | Sonnet | Signed installers for Windows/macOS/Linux, Android APK/AAB, updater |
+| 7 | **Releases** | Opus design ✅, Sonnet build | Public GitHub releases for Windows/macOS/Linux (unsigned for now) and Android (release-signed APKs/AAB), desktop updater, downloadable Japanese/Korean language data |
 | 8 | **Content packs** | Sonnet | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
 | 9 | **SRS module** | Opus design, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
 | 10 | **iOS / iPadOS** | Sonnet | App runs on iPhone/iPad; LAN sync with permissions; tablet layouts |
@@ -338,3 +338,39 @@ use an inline confirm (no `confirm()` calls remain in the UI). The top bar sat u
 Not verified / known gaps: Windows, Linux and iOS; mDNS across more than one Mac/phone pair (only tested here and on loopback); the local-network permission prompt on
 Android 17; a large library or large media over Wi-Fi (no throughput figures); the reader's "not downloaded" notice says "another paired device" rather than naming it;
 no UI to delete a term; media policy defaults on Android (video off, 500 MB cap) were not exercised on the phone.
+
+## M7 — Releases (build plan)
+
+Design: SPEC §17 (read fully), plus §16.1 and §9.6 for language data. Decisions already made by the user: public GitHub
+repo, no paid code signing, downloadable language data, name and app id are final. Steps, each ending with tests passing:
+
+1. **Language data (§17.3):** `scripts/build-langdata.sh`, package format, pinned `crates/alst-text/langdata.json`
+   (placeholder URLs until step 6), Lindera loading from a directory, download manager in a crate (sha256, resume,
+   cancel; unit tests with a local HTTP fixture), "Import from file", reader and Settings → Languages prompts,
+   LAN sync of packages as `langdata` media. Release builds without the embed features; record the new macOS app and
+   Android APK sizes in the status.
+2. **Release configuration (§17.1, §17.2, §17.6):** `scripts/bump-version.mjs`, `CHANGELOG.md`, bundle settings per
+   platform, Android release signing from `keystore.properties`/env, ABI splits, `versionCode`; generate the updater
+   key and release keystore into `~/.alstroemeria/` (never the repo) and tell the user to back that folder up;
+   `cargo deny` licence policy; `THIRD-PARTY-NOTICES.md` linked from About. Replace M6's blanket R8 disable in
+   `proguard-rules.pro` with keep rules for the barcode scanner, and confirm the scanner still works in a release build.
+3. **Updates (§17.4):** desktop updater with banner, "Check now" and the opt-out; Android "new version" banner linking
+   to the release page. Tests for version comparison and for a `latest.json` with a bad signature being refused.
+4. **M6 gaps:** Android 17 local-network permission (request when the Devices tab or pairing opens; if denied or never
+   prompted, explain and offer a button that opens the app's system settings); the "not downloaded" notice names
+   the device that has the file; a sync benchmark over loopback with a generated library (20k terms, 300 parts, 200 MB of
+   media) recording first-sync time and MB/s; exercise the Android media-policy defaults (video off, 500 MB cap).
+5. **CI (§17.5):** `ci.yml`, `release.yml` (draft releases, `latest.json`), `langdata.yml`. Validate the workflow files
+   locally (e.g. `actionlint`) since they can't run before the repo exists.
+6. **Publish (needs the user):** ask the user to create the public GitHub repo and give its URL. Offer to rewrite commit
+   authors to their GitHub no-reply address before the first push (history is unpushed, so this is safe) and do it only
+   if they agree. Ask before pushing. The user adds the Actions secrets themselves. Run `langdata.yml` for both
+   packages and fill in the real URLs and sha256 values. Bump to `0.1.0`, tag, and let `release.yml` make the draft.
+7. **Verify:** install the macOS `.dmg` from the draft (documenting the "Open anyway" step); on the Galaxy, follow §17.2's
+   switch from the debug-key build (sync to the Mac, uninstall, install the release APK, re-pair, library returns);
+   download Japanese language data on one device and get Korean from a peer over LAN; tag `0.1.1` and update the Mac
+   app through the updater, and see the Android banner. Windows and Linux are verified only if the user has a machine to
+   run them; otherwise record "built by CI, not run".
+
+Out of scope: paid signing and notarization, Play Store and F-Droid listings, Android self-update, iOS (M10), delete-term UI
+and other feature requests (they come from the user's testing notes after M7).
