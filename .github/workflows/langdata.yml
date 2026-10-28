@@ -6,7 +6,7 @@ name: Language data
 on:
   workflow_dispatch:
     inputs:
-      id: ko-kodic
+      id:
         description: Package id
         type: choice
         options: [ja-ipadic, ko-kodic]
