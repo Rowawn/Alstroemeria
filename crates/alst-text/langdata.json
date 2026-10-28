@@ -2,15 +2,15 @@
   {
     "id": "ja-ipadic",
     "version": "1",
-    "url": "https://example.invalid/langdata-ja-ipadic-1/langdata-ja-ipadic-1.zip",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "size": 0
+    "url": "https://github.com/Rowawn/Alstroemeria/releases/download/langdata-ja-ipadic-1/langdata-ja-ipadic-1.zip",
+    "sha256": "c4c7e85adc90cb2ad0c3ad3d041bdfb8bb3bec1a59c6b6848c2faa3af07d8951",
+    "size": 10391364
   },
   {
     "id": "ko-kodic",
     "version": "1",
-    "url": "https://example.invalid/langdata-ko-kodic-1/langdata-ko-kodic-1.zip",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "size": 0
+    "url": "https://github.com/Rowawn/Alstroemeria/releases/download/langdata-ko-kodic-1/langdata-ko-kodic-1.zip",
+    "sha256": "59f3ef7de98efebce4593435be2db46515dbb9a7bb6ffeb107d0dc90cecb598d",
+    "size": 19561222
   }
 ]
