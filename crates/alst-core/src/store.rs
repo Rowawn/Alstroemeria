@@ -566,7 +566,7 @@ impl Store {
     /// Every live term of a language, for coloring tokens (`text_lc` → state).
     pub fn term_states(&self, language: &str) -> Result<Vec<TermStateRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text_lc, status, word_count FROM terms WHERE language = ?1 AND deleted = 0 ORDER BY created_at, id",
+            "SELECT id, text_lc, status, word_count FROM terms WHERE language = ?1 AND deleted = 0 ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([language], |r| {
             Ok(TermStateRow { id: r.get(0)?, text_lc: r.get(1)?, status: r.get(2)?, word_count: r.get(3)? })
@@ -579,7 +579,7 @@ impl Store {
         let ids: Vec<String> = {
             let mut stmt = self.conn.prepare(
                 "SELECT id FROM terms WHERE language = ?1 AND deleted = 0 AND status BETWEEN ?2 AND ?3
-                 ORDER BY created_at, id",
+                 ORDER BY created_at, rowid",
             )?;
             stmt.query_map(params![language, min, max], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
         };
@@ -793,7 +793,7 @@ impl Store {
                 "SELECT id FROM terms WHERE language = ?1 AND deleted = 0
                    AND (?2 = '' OR instr(text_lc, lower(?2)) > 0 OR instr(lower(coalesce(translation, '')), lower(?2)) > 0)
                    AND (?3 IS NULL OR status = ?3)
-                 ORDER BY created_at, id LIMIT ?4",
+                 ORDER BY created_at, rowid LIMIT ?4",
             )?;
             stmt.query_map(params![language, query, status, limit as i64], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
         };
