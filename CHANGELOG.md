@@ -6,6 +6,12 @@ their own versions.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
+### Changed
+- When a video or audio file will not play, the message now includes the browser's error code and the position it stopped at,
+  so the cause can be found.
+
 ## [0.1.0] - 2026-10-27
 
 First public release.

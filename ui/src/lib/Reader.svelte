@@ -72,6 +72,12 @@
   let rate = $state(1);
   let playing = $state(false);
   let playError = $state("");
+  /** MediaError codes: 1 aborted, 2 network, 3 decode, 4 source not supported. */
+  function onMediaError() {
+    const e = player?.error;
+    const detail = e ? ` [code ${e.code}${e.message ? `: ${e.message}` : ""}${player ? `, at ${player.currentTime.toFixed(1)}s` : ""}]` : "";
+    playError = `This device can't play this file (${view?.media?.mime}).${detail}`;
+  }
   let listened = 0; // seconds of actual playback, reported as `media.listen`
   let playedAt = 0;
   let raf = 0;
@@ -408,7 +414,7 @@
                 onended={onPause}
                 onseeked={tick}
                 onloadedmetadata={onLoaded}
-                onerror={() => (playError = `This device can't play this file (${view?.media?.mime}).`)}
+                onerror={onMediaError}
               ></video>
             {:else}
               <!-- svelte-ignore a11y_media_has_caption -->
@@ -422,7 +428,7 @@
                 onended={onPause}
                 onseeked={tick}
                 onloadedmetadata={onLoaded}
-                onerror={() => (playError = `This device can't play this file (${view?.media?.mime}).`)}
+                onerror={onMediaError}
               ></audio>
             {/if}
             {#if playError}<p class="error">{playError}</p>{/if}
