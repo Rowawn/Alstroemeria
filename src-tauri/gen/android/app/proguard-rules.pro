@@ -1,28 +1,15 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
-
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
-
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
-# The barcode scanner plugin (CameraX + ML Kit) crashes when minified.
--dontobfuscate
--dontoptimize
+# R8 runs in release builds (obfuscation and optimization on). The rules below keep what is reached by
+# reflection or JNI: Tauri's plugin classes and their annotated commands and argument classes, and the
+# barcode scanner stack (CameraX + ML Kit) behind QR pairing (SPEC §9.3).
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,RuntimeVisibleAnnotations
+-keep class kotlin.Metadata { *; }
 -keep class app.tauri.** { *; }
+-keep class com.alstroemeria.app.** { *; }
+-keepclassmembers class * {
+    @app.tauri.annotation.Command *;
+    @app.tauri.annotation.PermissionCallback *;
+    @app.tauri.annotation.ActivityCallback *;
+}
 -keep class com.google.mlkit.** { *; }
 -keep class com.google.android.gms.** { *; }
 -keep class androidx.camera.** { *; }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import LocalNetworkNotice from "./LocalNetworkNotice.svelte";
   import { sync, syncApi, type MediaPolicy, type SyncPeer } from "./sync.svelte";
 
   let nameDraft = $state("");
@@ -97,6 +98,7 @@
 </script>
 
 <h1>Devices</h1>
+<LocalNetworkNotice />
 <p class="muted">
   Paired devices on the same Wi-Fi sync your library, words and settings directly, with no server or account.
 </p>

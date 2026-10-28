@@ -16,3 +16,4 @@ node_modules
 /extensions/*/wasm-shim.js
 /extensions/*/panel.js
 /.playwright-mcp
+/dist

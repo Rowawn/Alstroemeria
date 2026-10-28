@@ -1,4 +1,6 @@
 <script lang="ts">
+  import LangData from "./LangData.svelte";
+  import { needsLangData } from "./langdata-state.svelte";
   import { onMount } from "svelte";
   import { sync } from "./sync.svelte";
   import { api, type Language, type PartInfo, type Work } from "./api";
@@ -21,6 +23,7 @@
   let file = $state<File | null>(null);
   let busy = $state(false);
   let error = $state("");
+  let langdataId = $state("");
 
   async function refresh() {
     works = await api.works();
@@ -36,6 +39,7 @@
   async function add(event: Event) {
     event.preventDefault();
     error = "";
+    langdataId = "";
     busy = true;
     try {
       if (tab === "text") await api.createWork(language, title, text);
@@ -48,6 +52,7 @@
       await refresh();
     } catch (e) {
       error = String(e);
+      langdataId = needsLangData(e) ?? "";
     } finally {
       busy = false;
     }
@@ -133,7 +138,7 @@
     <input type="url" placeholder="https://…" bind:value={url} required />
   {/if}
   <button class="primary" type="submit" disabled={busy}>{busy ? "Importing…" : "Add"}</button>
-  {#if error}<p class="error">{error}</p>{/if}
+  {#if langdataId}<LangData id={langdataId} />{:else if error}<p class="error">{error}</p>{/if}
 </form>
 {/if}
 

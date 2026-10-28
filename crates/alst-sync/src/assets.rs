@@ -1,6 +1,6 @@
 //! Asset exchange after the data sync (SPEC §9.6): `have`/`want`, then chunked transfer with a sha256
 //! check before a file enters the media store. Media follows the receiving device's per-peer policy;
-//! dictionary and extension archives always transfer.
+//! dictionary, extension and language data archives always transfer.
 
 use crate::peers;
 use crate::proto::{Msg, Transport, unexpected};
@@ -12,6 +12,8 @@ use alst_core::media::MediaDir;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+/// Language data packages (SPEC §17.3) transfer like dictionaries; `alst_text::langdata::MIME`.
+const LANGDATA_MIME: &str = "application/x-alstroemeria-langdata";
 const CHUNK: u64 = 256 * 1024;
 /// Hash lists are sent whole; this bounds one message at about 1 MB.
 const MAX_LIST: usize = 12_000;
@@ -43,7 +45,7 @@ fn wants(media: Option<&MediaDir>, store: &Mutex<Store>, peer_site: &str, peer_h
     Ok(s.media_list()?
         .into_iter()
         .filter(|r| peer_have.contains(&r.id) && !media.exists(&r.id))
-        .filter(|r| always.contains(&r.id) || policy.allows(&r.mime, r.size))
+        .filter(|r| always.contains(&r.id) || r.mime == LANGDATA_MIME || policy.allows(&r.mime, r.size))
         .map(|r| r.id)
         .collect())
 }

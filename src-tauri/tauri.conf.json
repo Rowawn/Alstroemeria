@@ -42,13 +42,47 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "appimage",
+      "deb"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "android": {
+      "versionCode": 100
+    },
+    "category": "Education",
+    "shortDescription": "Local-first language immersion reader",
+    "longDescription": "Read, listen and learn languages from your own texts and media. Everything stays on your devices and syncs over your local network.",
+    "copyright": "Alstroemeria contributors",
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExQThEREQ1NTMyQjU1NDcKUldSSFZTdFQxZDJvRVZ0SElaNHlHWTMvQk9sR0xHcnBnMXR6M050Wm1mS2M2YktaZUdtdU1JenQK",
+      "endpoints": [
+        "https://github.com/Rowawn/Alstroemeria/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

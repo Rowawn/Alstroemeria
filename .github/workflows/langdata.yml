@@ -1,0 +1,55 @@
+name: Language data
+
+# Manual. Builds one language data package (SPEC §17.3) and publishes it as the release `langdata-<id>-<version>`.
+# It is never the "latest" release (that is the app's update feed). Afterwards, copy the printed url, sha256 and
+# size into crates/alst-text/langdata.json.
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Package id
+        type: choice
+        options: [ja-ipadic, ko-kodic]
+        required: true
+      version:
+        description: Package version (change it whenever the contents change)
+        default: "1"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the package
+        id: build
+        run: |
+          out=$(scripts/build-langdata.sh "${{ inputs.id }}" "${{ inputs.version }}")
+          echo "$out"
+          echo "zip=$(echo "$out" | sed -n 1p)" >> "$GITHUB_OUTPUT"
+          echo "pin=$(echo "$out" | sed -n 2p)" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="langdata-${{ inputs.id }}-${{ inputs.version }}"
+          zip="${{ steps.build.outputs.zip }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists: published packages are immutable (their sha256 is pinned in the app). Use a new version." >&2
+            exit 1
+          fi
+          gh release create "$tag" "$zip" --title "Language data ${{ inputs.id }} ${{ inputs.version }}" \
+            --notes "Compiled dictionary for Alstroemeria. Pin it in crates/alst-text/langdata.json." --latest=false
+          url="https://github.com/${{ github.repository }}/releases/download/$tag/$(basename "$zip")"
+          {
+            echo "### Pin for crates/alst-text/langdata.json"
+            echo '```json'
+            echo '${{ steps.build.outputs.pin }}' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s);p.url=process.argv[1];console.log(JSON.stringify(p,null,2))})' "$url"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

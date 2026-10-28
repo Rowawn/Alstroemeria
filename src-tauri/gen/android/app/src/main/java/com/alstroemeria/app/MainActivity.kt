@@ -1,6 +1,11 @@
 package com.alstroemeria.app
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
 import android.net.wifi.WifiManager
 import android.content.pm.PackageManager
 import android.os.Build
@@ -15,9 +20,36 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    // Android 17 blocks LAN connections and mDNS until the user grants local network access.
-    if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission(LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED) {
-      requestPermissions(arrayOf(LOCAL_NETWORK), 7)
+  }
+
+  // The UI asks for local network access when the Devices tab or pairing opens (SPEC §9), through this bridge.
+  override fun onWebViewCreate(webView: WebView) {
+    webView.addJavascriptInterface(Bridge(), "AlstAndroid")
+  }
+
+  private inner class Bridge {
+    /** "granted", "denied" or "unneeded" (before Android 17 there is no such permission). */
+    @JavascriptInterface
+    fun localNetwork(): String = when {
+      Build.VERSION.SDK_INT < 37 -> "unneeded"
+      checkSelfPermission(LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED -> "granted"
+      else -> "denied"
+    }
+
+    /** Android 17 blocks LAN connections and mDNS until granted. Shows the system prompt if it still can. */
+    @JavascriptInterface
+    fun requestLocalNetwork() {
+      if (Build.VERSION.SDK_INT >= 37 && checkSelfPermission(LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED) {
+        runOnUiThread { requestPermissions(arrayOf(LOCAL_NETWORK), 7) }
+      }
+    }
+
+    /** For when the prompt no longer appears: this app's page in system settings. */
+    @JavascriptInterface
+    fun openAppSettings() {
+      runOnUiThread {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+      }
     }
   }
 

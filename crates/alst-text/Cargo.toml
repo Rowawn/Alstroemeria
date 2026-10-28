@@ -14,9 +14,15 @@ roxmltree = "0.20"
 scraper = "0.23"
 ureq = "3"
 encoding_rs = "0.8"
-lindera = { version = "=6.2.0", default-features = false, optional = true }
+lindera = { version = "=6.2.0", default-features = false, features = ["mmap"], optional = true }
+sha2 = "0.10"
 
 [features]
-default = ["lang-ja", "lang-ko"]
-lang-ja = ["dep:lindera", "lindera/embed-ipadic"]
-lang-ko = ["dep:lindera", "lindera/embed-ko-dic"]
+# The engine; dictionaries come from installed language data (SPEC §17.3).
+lang-ja = ["dep:lindera"]
+lang-ko = ["dep:lindera"]
+# Compile a dictionary in (tests and development only: release builds leave these off).
+embed-ja = ["lang-ja", "lindera/embed-ipadic"]
+embed-ko = ["lang-ko", "lindera/embed-ko-dic"]
+embed-langdata = ["embed-ja", "embed-ko"]
+default = ["lang-ja", "lang-ko", "embed-langdata"]

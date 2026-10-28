@@ -6,6 +6,7 @@ pub mod deinflect;
 pub mod export;
 pub mod import;
 pub mod lang;
+pub mod langdata;
 pub mod morph;
 pub mod reader;
 
@@ -18,6 +19,9 @@ pub enum Error {
     Manifest(String),
     #[error("unsupported tokenizer engine '{0}'")]
     Engine(String),
+    /// The language data package with this id (SPEC §17.3) isn't installed.
+    #[error("language data '{0}' is not installed")]
+    LangData(String),
     #[error("{0}")]
     Import(String),
 }

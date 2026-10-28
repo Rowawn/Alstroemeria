@@ -12,7 +12,10 @@
     "build": "npm run build -w ui",
     "check": "npm run check -w ui",
     "test": "npm run test -w ui",
-    "build:extensions": "node scripts/build-extensions.mjs"
+    "build:extensions": "node scripts/build-extensions.mjs",
+    "test:scripts": "node --test scripts/",
+    "bump": "node scripts/bump-version.mjs",
+    "notices": "node scripts/gen-notices.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

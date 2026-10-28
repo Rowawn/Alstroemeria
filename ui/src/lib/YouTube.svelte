@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorText } from "./langdata-state.svelte";
   import { api } from "./api";
 
   let { language, onDone }: { language: string; onDone: () => void } = $props();
@@ -16,7 +17,7 @@
       url = "";
       onDone();
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     } finally {
       busy = false;
     }

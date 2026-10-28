@@ -38,7 +38,7 @@ export type Unit = {
   end: number;
   tokenRange: [number, number];
 };
-export type MediaView = { hash: string; mime: string; video: boolean; present: boolean };
+export type MediaView = { hash: string; mime: string; video: boolean; present: boolean; onDevice: string | null };
 export type PartView = {
   work: Work;
   parts: PartInfo[];

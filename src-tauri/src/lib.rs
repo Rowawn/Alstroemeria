@@ -17,7 +17,9 @@ use tauri_plugin_opener::OpenerExt;
 
 mod ext;
 mod media;
+mod langdata;
 mod sync;
+mod update;
 
 pub(crate) struct AppState {
     store: Arc<Mutex<Store>>,
@@ -37,6 +39,8 @@ pub(crate) struct AppState {
     event_cursor: AtomicI64,
     /// LAN sync (SPEC §9); `None` until the service has started, or if it couldn't.
     sync: OnceLock<Arc<sync::SyncCtx>>,
+    /// Language data downloads in progress, with their cancel flags (SPEC §17.3).
+    langdata_jobs: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -62,6 +66,14 @@ impl AppState {
             .find(|l| l.id == id)
             .cloned()
             .ok_or_else(|| format!("language '{id}' is not installed"))
+    }
+
+    /// Fail with `langdata:<id>` (the UI shows the download prompt) when `lang` needs language data that isn't installed.
+    fn require_langdata(&self, lang: &LanguageDef) -> Res<()> {
+        match lang.langdata_missing() {
+            Some(id) => Err(format!("langdata:{id}")),
+            None => Ok(()),
+        }
     }
 
     /// Send events written since the last call to the UI (`alst:event`), so listeners see core events live.
@@ -105,6 +117,7 @@ fn header(request: &Request<'_>, name: &str) -> Res<String> {
 
 fn store_import(state: &AppState, language: &str, w: ImportedWork) -> Res<Work> {
     let lang = state.lang(language)?;
+    state.require_langdata(&lang)?;
     let parts = w
         .parts
         .into_iter()
@@ -126,6 +139,7 @@ fn store_import(state: &AppState, language: &str, w: ImportedWork) -> Res<Work> 
 /// Store a work whose parts play `media_hash` (a media-store id); parts without times get none.
 fn store_media_work(state: &AppState, language: &str, w: alst_text::import::media::MediaWork, media_hash: Option<&str>) -> Res<Work> {
     let lang = state.lang(language)?;
+    state.require_langdata(&lang)?;
     let parts = w
         .parts
         .into_iter()
@@ -239,6 +253,8 @@ struct MediaView {
     video: bool,
     /// False when the file isn't on this device (e.g. synced metadata without the file).
     present: bool,
+    /// Name of the paired device the file was imported on, when the file isn't here and that device is known.
+    on_device: Option<String>,
 }
 
 /// Term lookup tables for a language: key → state, plus the multi-word matcher.
@@ -286,9 +302,18 @@ fn get_part_view(state: State<AppState>, part_id: String) -> Res<PartView> {
     let part = store.get_part(&part_id).map_err(err)?;
     let work = store.get_work(&part.work_id).map_err(err)?;
     let lang = state.lang(&work.language)?;
+    state.require_langdata(&lang)?;
     let (units, tokens) = view_for(&store, &lang, &part.id, &part.text)?;
     let media = match &part.media_hash {
-        Some(h) => store.media_info(h).map_err(err)?.map(|m| MediaView { present: state.media.exists(&m.id), video: m.mime.starts_with("video/"), hash: m.id, mime: m.mime }),
+        Some(h) => store.media_info(h).map_err(err)?.map(|m| {
+            let present = state.media.exists(&m.id);
+            let on_device = if present {
+                None
+            } else {
+                store.media_origin(&m.id).ok().flatten().and_then(|site| alst_sync::peers::peer_by_site(&store, &site).ok().flatten()).map(|p| p.name)
+            };
+            MediaView { present, on_device, video: m.mime.starts_with("video/"), hash: m.id, mime: m.mime }
+        }),
         None => None,
     };
     let timing = part.timing.as_deref().and_then(|t| serde_json::from_str(t).ok());
@@ -571,6 +596,9 @@ pub fn run() {
     // QR pairing scans with the camera (SPEC §9.3); phones only.
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    // Desktop self-update (SPEC §17.4).
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
         .register_uri_scheme_protocol("alstext", ext::serve)
         .register_uri_scheme_protocol("alstmedia", media::serve)
@@ -599,7 +627,11 @@ pub fn run() {
                 deinflectors: RwLock::new(deinflectors),
                 event_cursor,
                 sync: OnceLock::new(),
+                langdata_jobs: Mutex::new(HashMap::new()),
             });
+            if let Some(state) = app.try_state::<AppState>() {
+                langdata::reconcile(&state);
+            }
             sync::start(app.handle());
             Ok(())
         })
@@ -631,6 +663,14 @@ pub fn run() {
             dict_meta,
             open_url,
             export_tsv,
+            update::update_info,
+            update::update_set_auto,
+            update::update_check,
+            update::update_install,
+            langdata::langdata_status,
+            langdata::langdata_download,
+            langdata::langdata_cancel,
+            langdata::langdata_import,
             sync::sync_overview,
             sync::set_device_name,
             sync::pair_start,

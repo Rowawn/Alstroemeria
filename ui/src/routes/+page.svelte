@@ -11,13 +11,15 @@
   import type { CoreEvent } from "$lib/ext/types";
   import Export from "$lib/Export.svelte";
   import Extensions from "$lib/Extensions.svelte";
+  import Languages from "$lib/Languages.svelte";
   import Library from "$lib/Library.svelte";
   import Reader from "$lib/Reader.svelte";
   import { sync } from "$lib/sync.svelte";
+  import UpdateBanner from "$lib/UpdateBanner.svelte";
   import Toasts from "$lib/Toasts.svelte";
 
   let languages = $state<Language[] | null>(null);
-  let tab = $state<"library" | "dictionaries" | "export" | "extensions" | "devices" | "about">("library");
+  let tab = $state<"library" | "dictionaries" | "languages" | "export" | "extensions" | "devices" | "about">("library");
   let partId = $state<string | null>(null);
   let error = $state("");
 
@@ -48,6 +50,7 @@
 </script>
 
 <main>
+  <UpdateBanner />
   {#if error}
     <p class="error">{error}</p>
   {:else if languages}
@@ -59,6 +62,7 @@
       <nav class="row">
         <button class:primary={tab === "library"} onclick={() => (tab = "library")}>Library</button>
         <button class:primary={tab === "dictionaries"} onclick={() => (tab = "dictionaries")}>Dictionaries</button>
+        <button class:primary={tab === "languages"} onclick={() => (tab = "languages")}>Languages</button>
         <button class:primary={tab === "export"} onclick={() => (tab = "export")}>Export</button>
         <button class:primary={tab === "extensions"} onclick={() => (tab = "extensions")}>Extensions</button>
         <button class:primary={tab === "devices"} onclick={() => (tab = "devices")}>Devices</button>
@@ -79,6 +83,8 @@
         <Library {languages} onOpen={(id) => (partId = id)} />
       {:else if tab === "dictionaries"}
         <Dictionaries {languages} />
+      {:else if tab === "languages"}
+        <Languages />
       {:else if tab === "extensions"}
         <Extensions {languages} />
       {:else if tab === "devices"}

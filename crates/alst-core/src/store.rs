@@ -2,7 +2,7 @@
 //! per-column clocks in `_changes`; nothing else may write synced tables.
 
 use crate::{Error, Result, hlc};
-use rusqlite::{Connection, Transaction, params, types::Value};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, types::Value};
 use serde::Serialize;
 use std::path::Path;
 
@@ -424,6 +424,15 @@ impl Store {
         put_row(&tx, "media", hash, &cols, stamp, &site)?;
         tx.commit()?;
         Ok(MediaRow { id: hash.into(), mime: mime.into(), size, original_name: original_name.map(Into::into) })
+    }
+
+    /// The site that first wrote the media row: the device the file was imported on, so the one most likely
+    /// to have it (SPEC §9.6). `None` for an unknown row.
+    pub fn media_origin(&self, hash: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT site_id FROM _changes WHERE tbl = 'media' AND row_id = ?1 ORDER BY hlc, site_id LIMIT 1", [hash], |r| r.get(0))
+            .optional()?)
     }
 
     pub fn media_info(&self, hash: &str) -> Result<Option<MediaRow>> {
@@ -1176,6 +1185,8 @@ mod tests {
         let m = s.register_media(&h, "audio/mpeg", 10, Some("x.mp3")).unwrap();
         assert_eq!(m.mime, "audio/mpeg");
         s.register_media(&h, "audio/other", 99, None).unwrap();
+        assert_eq!(s.media_origin(&h).unwrap().as_deref(), Some(s.site_id()));
+        assert_eq!(s.media_origin("nope").unwrap(), None);
         assert_eq!(s.media_info(&h).unwrap().unwrap().size, 10);
         let n: i64 = s.conn().query_row("SELECT count(*) FROM _changes WHERE tbl = 'media' AND row_id = ?1", [&h], |r| r.get(0)).unwrap();
         assert_eq!(n, 5);

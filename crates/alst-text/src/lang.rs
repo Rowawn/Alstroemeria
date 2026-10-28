@@ -195,6 +195,16 @@ impl LanguageDef {
         self.morph.is_some()
     }
 
+    /// Id of the language data package this language's engine needs (SPEC §17.3), if it uses one.
+    pub fn langdata_id(&self) -> Option<&'static str> {
+        self.morph.map(Morph::langdata_id)
+    }
+
+    /// Like [`Self::langdata_id`], but only when that data isn't available right now.
+    pub fn langdata_missing(&self) -> Option<&'static str> {
+        self.morph.filter(|m| !morph::available(*m)).map(Morph::langdata_id)
+    }
+
     /// Languages written without spaces between words (word chains match without whitespace).
     pub fn spaceless(&self) -> bool {
         self.morph == Some(Morph::Ja)

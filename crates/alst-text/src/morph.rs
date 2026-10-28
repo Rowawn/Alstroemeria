@@ -25,6 +25,48 @@ impl Morph {
             Morph::Ko => "ko",
         }
     }
+
+    /// Id of the language data package holding this engine's dictionary (SPEC §17.3).
+    pub fn langdata_id(self) -> &'static str {
+        match self {
+            Morph::Ja => "ja-ipadic",
+            Morph::Ko => "ko-kodic",
+        }
+    }
+
+    pub fn from_langdata_id(id: &str) -> Option<Morph> {
+        [Morph::Ja, Morph::Ko].into_iter().find(|m| m.langdata_id() == id)
+    }
+
+    fn slot(self) -> usize {
+        self as usize
+    }
+
+    /// Whether a dictionary was compiled in (the `embed-*` features, for tests and development).
+    fn embedded(self) -> bool {
+        match self {
+            Morph::Ja => cfg!(feature = "embed-ja"),
+            Morph::Ko => cfg!(feature = "embed-ko"),
+        }
+    }
+}
+
+/// Directory of installed language data per engine, set by [`set_dict_dir`].
+static DICT_DIRS: std::sync::Mutex<[Option<std::path::PathBuf>; 2]> = std::sync::Mutex::new([None, None]);
+
+/// Point an engine at an installed dictionary directory (or `None` to unset it). Drops any loaded dictionary.
+pub fn set_dict_dir(kind: Morph, dir: Option<std::path::PathBuf>) {
+    DICT_DIRS.lock().unwrap_or_else(|e| e.into_inner())[kind.slot()] = dir;
+    engine::reset(kind);
+}
+
+fn dict_dir(kind: Morph) -> Option<std::path::PathBuf> {
+    DICT_DIRS.lock().unwrap_or_else(|e| e.into_inner())[kind.slot()].clone()
+}
+
+/// Whether `kind` can tokenize right now: its language data is installed or a dictionary is compiled in.
+pub fn available(kind: Morph) -> bool {
+    cfg!(any(feature = "lang-ja", feature = "lang-ko")) && (dict_dir(kind).is_some() || kind.embedded())
 }
 
 /// One reader word (or a piece of non-word text) with its byte range in the analysed text.
@@ -82,28 +124,42 @@ mod engine {
     use lindera::mode::Mode;
     use lindera::segmenter::Segmenter;
     use std::borrow::Cow;
-    use std::sync::OnceLock;
+    use std::sync::{Arc, Mutex};
 
-    #[cfg(feature = "lang-ja")]
-    static JA: OnceLock<Segmenter> = OnceLock::new();
-    #[cfg(feature = "lang-ko")]
-    static KO: OnceLock<Segmenter> = OnceLock::new();
+    /// Loaded segmenters by engine; loaded lazily, and only a successful load is kept so that data
+    /// installed later is picked up without a restart.
+    static SEGS: Mutex<[Option<Arc<Segmenter>>; 2]> = Mutex::new([None, None]);
 
-    fn build(name: &str) -> Segmenter {
-        let dict = load_dictionary(&format!("embedded://{name}")).expect("embedded dictionary");
-        Segmenter::new(Mode::Normal, dict, None)
+    pub fn reset(kind: Morph) {
+        SEGS.lock().unwrap_or_else(|e| e.into_inner())[kind.slot()] = None;
+    }
+
+    fn build(kind: Morph) -> Result<Segmenter> {
+        let uri = match dict_dir(kind) {
+            Some(dir) => dir.to_string_lossy().into_owned(),
+            None if kind.embedded() => match kind {
+                Morph::Ja => "embedded://ipadic".to_string(),
+                Morph::Ko => "embedded://ko-dic".to_string(),
+            },
+            None => return Err(Error::LangData(kind.langdata_id().to_string())),
+        };
+        let dict = load_dictionary(&uri).map_err(|e| Error::Engine(format!("{} dictionary: {e}", kind.code())))?;
+        Ok(Segmenter::new(Mode::Normal, dict, None))
+    }
+
+    fn segmenter(kind: Morph) -> Result<Arc<Segmenter>> {
+        let mut segs = SEGS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = &segs[kind.slot()] {
+            return Ok(s.clone());
+        }
+        let s = Arc::new(build(kind)?);
+        segs[kind.slot()] = Some(s.clone());
+        Ok(s)
     }
 
     /// Run Lindera, returning normalised morphemes in text order.
     pub fn segment(kind: Morph, text: &str) -> Result<Vec<M>> {
-        let seg: &Segmenter = match kind {
-            #[cfg(feature = "lang-ja")]
-            Morph::Ja => JA.get_or_init(|| build("ipadic")),
-            #[cfg(feature = "lang-ko")]
-            Morph::Ko => KO.get_or_init(|| build("ko-dic")),
-            #[allow(unreachable_patterns)]
-            _ => return Err(Error::Engine(format!("{} support was not compiled in", kind.code()))),
-        };
+        let seg = segmenter(kind)?;
         let mut toks = seg.segment(Cow::Borrowed(text)).map_err(|e| Error::Import(format!("tokenizer: {e}")))?;
         let mut out: Vec<M> = Vec::with_capacity(toks.len());
         let mut prev_end = 0;
@@ -178,6 +234,7 @@ mod engine {
     pub fn segment(kind: Morph, _text: &str) -> Result<Vec<M>> {
         Err(Error::Engine(format!("{} support was not compiled in", kind.code())))
     }
+    pub fn reset(_kind: Morph) {}
 }
 
 /// Analyse `text` into reader words and non-word runs (in order, covering only analysed spans;

@@ -6,6 +6,7 @@ pub mod media;
 mod rekey;
 pub mod store;
 pub mod sync;
+pub mod update;
 
 pub use store::{DictionaryRow, EventRow, ExtPackageRow, ExtStateRow, MediaRow, NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
 

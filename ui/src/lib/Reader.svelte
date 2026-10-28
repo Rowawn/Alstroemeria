@@ -7,6 +7,8 @@
   import type { MergedHints } from "./ext/hints";
   import { hintStyle } from "./ext/render";
   import type { ExtInfo, LookupSection, ResolvedView, Token } from "./ext/types";
+  import LangData from "./LangData.svelte";
+  import { langdata, needsLangData } from "./langdata-state.svelte";
   import PanelHost from "./PanelHost.svelte";
   import TermEditor from "./TermEditor.svelte";
 
@@ -19,6 +21,8 @@
 
   let view = $state<PartView | null>(null);
   let error = $state("");
+  /** Set while this part waits for language data (SPEC §17.3). */
+  let langdataId = $state("");
   // Selection as source offsets so it survives a reload that regroups units into a multi-word term.
   let sel = $state<{ start: number; end: number } | null>(null);
   let selGen = $state(0); // new editor instance per click/drag, not per extend
@@ -156,13 +160,27 @@
     try {
       view = await api.partView(partId);
     } catch (e) {
-      error = String(e);
+      const id = needsLangData(e);
+      if (id) {
+        langdataId = id;
+        langdata.start();
+      } else error = String(e);
       return;
     }
+    langdataId = "";
     void runExtensions();
   }
 
   // Synced changes (new terms from another device, a file that finished downloading) reload the part.
+  let seenData = langdata.tick;
+  $effect(() => {
+    const t = langdata.tick;
+    if (t !== seenData) {
+      seenData = t;
+      if (langdataId) void load();
+    }
+  });
+
   let seenTick = sync.tick;
   $effect(() => {
     const t = sync.tick;
@@ -335,6 +353,9 @@
 {#if error}
   <p class="error">{error}</p>
   <button onclick={onBack}>Back</button>
+{:else if langdataId}
+  <LangData id={langdataId} />
+  <button onclick={onBack}>Back</button>
 {:else if view}
   <div class="layout" class:open={!!sel || !!detached || !!openPanelRef}>
     <div class="main">
@@ -369,7 +390,7 @@
         <div class="player">
           {#if !view.media.present}
             <p class="error">
-              This file is on another paired device and hasn't been downloaded here.
+              {view.media.onDevice ? `On ${view.media.onDevice}, not downloaded.` : "This file is on another paired device and hasn't been downloaded here."}
               <button disabled={downloading} onclick={() => downloadNow(view!.media!.hash)}>{downloading ? "Downloading…" : "Download now"}</button>
             </p>
             {#if downloadError}<p class="error">{downloadError}</p>{/if}

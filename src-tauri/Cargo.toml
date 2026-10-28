@@ -2,6 +2,7 @@
 name = "alstroemeria"
 version = "0.1.0"
 description = "Alstroemeria app shell"
+license = "MPL-2.0"
 authors = []
 edition = "2024"
 
@@ -17,10 +18,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Compile the Japanese and Korean dictionaries in (SPEC §17.3): for development; release builds leave it off
+# and download the language data instead.
+embed-langdata = ["alst-text/embed-langdata"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 alst-core = { path = "../crates/alst-core" }
-alst-text = { path = "../crates/alst-text" }
+alst-text = { path = "../crates/alst-text", default-features = false, features = ["lang-ja", "lang-ko"] }
 alst-dict = { path = "../crates/alst-dict" }
 alst-ext = { path = "../crates/alst-ext" }
 alst-sync = { path = "../crates/alst-sync" }
@@ -31,7 +37,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 
+# The desktop updater (SPEC §17.4). Android has no self-update; its banner is plain code in `update.rs`.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

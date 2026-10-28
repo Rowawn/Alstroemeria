@@ -374,3 +374,7 @@ repo, no paid code signing, downloadable language data, name and app id are fina
 
 Out of scope: paid signing and notarization, Play Store and F-Droid listings, Android self-update, iOS (M10), delete-term UI
 and other feature requests (they come from the user's testing notes after M7).
+
+### M7 status (in progress)
+
+Steps 1-5 are built and tested; 6 (publish) waits for the user's repo, 7 (verify on devices) follows it. The full status is written when M7 ends.

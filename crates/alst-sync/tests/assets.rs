@@ -113,3 +113,42 @@ fn a_file_that_fails_its_checksum_is_not_stored() {
     assert!(err.to_string().contains("checksum"), "{err}");
     assert!(!media.exists(&claimed));
 }
+
+/// The Android defaults (SPEC §9.6): video off, files over 500 MB skipped. The size rule goes by the synced
+/// row's `size`, so rows can claim a big size without storing a big file.
+#[test]
+fn android_defaults_skip_video_and_files_over_500_mb() {
+    let (a, b) = (dev("Mac"), dev("Phone"));
+    pair(&a, &b);
+    let android = MediaPolicy { audio: true, video: false, images: true, max_mb: 500 };
+    assert_eq!(android, MediaPolicy { audio: true, video: false, images: true, max_mb: 500 });
+    let add_sized = |bytes: &[u8], mime: &str, claimed_mb: i64| {
+        let (hash, _) = a.media.put_bytes(bytes, 1 << 30).unwrap();
+        a.store.lock().unwrap().register_media(&hash, mime, claimed_mb * 1024 * 1024, Some("f")).unwrap();
+        hash
+    };
+    let small_audio = add_sized(b"small audio", "audio/mpeg", 3);
+    let edge_audio = add_sized(b"exactly at the cap", "audio/mpeg", 500);
+    let huge_audio = add_sized(b"over the cap", "audio/mpeg", 501);
+    let video = add_sized(b"a short video", "video/mp4", 1);
+    let image = add_sized(b"an image", "image/png", 1);
+    peers::set_media_policy(&b.store.lock().unwrap(), &a.site(), &android).unwrap();
+    b.svc.sync_with(&a.site(), &[a.addr()]).unwrap();
+    assert!(b.media.exists(&small_audio) && b.media.exists(&edge_audio) && b.media.exists(&image));
+    assert!(!b.media.exists(&huge_audio), "over 500 MB is skipped");
+    assert!(!b.media.exists(&video), "video is off");
+    // "Download now" still gets them.
+    let hints = HashMap::from([(a.site(), vec![a.addr()])]);
+    assert!(b.svc.download_media(&huge_audio, &hints).unwrap() && b.svc.download_media(&video, &hints).unwrap());
+}
+
+/// A language data package is always transferred, whatever the media policy (SPEC §17.3).
+#[test]
+fn language_data_packages_ignore_the_media_policy() {
+    let (a, b) = (dev("Mac"), dev("Phone"));
+    pair(&a, &b);
+    let pkg = a.add(&vec![5u8; 600_000], "application/x-alstroemeria-langdata");
+    peers::set_media_policy(&b.store.lock().unwrap(), &a.site(), &MediaPolicy { audio: false, video: false, images: false, max_mb: 1 }).unwrap();
+    b.svc.sync_with(&a.site(), &[a.addr()]).unwrap();
+    assert!(b.media.exists(&pkg));
+}

@@ -1087,8 +1087,9 @@ app). Japanese and Korean dictionaries become **downloadable language data**. Th
 ### 17.1 Versions and artifacts
 
 - One version for the app (semver, starting `0.1.0`), written by `scripts/bump-version.mjs` into
-  `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (crates keep their own
-  versions). Android `versionCode` = `major*10000 + minor*100 + patch`. Tag `v<version>` starts a release.
+  `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json` and the app's entry in `Cargo.lock` (crates keep
+  their own versions). Android `versionCode` = `major*10000 + minor*100 + patch`, written to
+  `bundle.android.versionCode` in `tauri.conf.json` (so `0.1.0` is 100). Tag `v<version>` starts a release.
 - `CHANGELOG.md` (Keep a Changelog style); the release notes are its section for that version.
 
 | Platform | Artifacts | Notes |
@@ -1096,19 +1097,23 @@ app). Japanese and Korean dictionaries become **downloadable language data**. Th
 | macOS | universal `.dmg` (x86_64 + arm64), updater `.app.tar.gz` | ad-hoc signed (`signingIdentity: "-"`), not notarized |
 | Windows | NSIS `-setup.exe` (per-user, no admin), updater bundle | unsigned; WebView2 via the download bootstrapper |
 | Linux | `.AppImage` (updater), `.deb` | built on the oldest supported Ubuntu runner for glibc reach |
-| Android | APKs split per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and a universal APK; an `.aab` for a future Play listing | signed with the release key |
+| Android | APKs split per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and a universal APK; an `.aab` for a future Play listing | signed with the release key; built with `tauri android build --apk --split-per-abi`, then `--apk` (universal) and `--aab` |
 
 ### 17.2 Keys and secrets
 
 Never in the repo. Generated once on the user's Mac, backed up by the user, and entered by the user
 as GitHub Actions secrets:
 
+- Both passwords live in `~/.alstroemeria/passwords.env` (mode 600) next to the keys; the whole folder is what the
+  user backs up.
 - **Updater key** (`tauri signer generate`, ed25519): private key at `~/.alstroemeria/updater.key`;
   the public key goes in `tauri.conf.json`. Secrets `TAURI_SIGNING_PRIVATE_KEY` and its password.
   Losing it means existing installs can never auto-update again.
 - **Android release keystore** (`keytool`, RSA 4096, 30+ years): `~/.alstroemeria/release.jks`.
   Gradle reads it from `src-tauri/gen/android/keystore.properties` (gitignored) locally, or from the
-  secrets `ANDROID_KEYSTORE_B64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` in CI. Losing it means
+  secrets `ANDROID_KEYSTORE_B64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` in CI (one password for the store and
+  the key; CI writes the decoded keystore to `ANDROID_KEYSTORE_PATH`). R8 is on in release builds; its keep rules
+  (`proguard-rules.pro`) cover Tauri's plugin classes and the barcode scanner (CameraX, ML Kit). Losing it means
   Android users must uninstall to update. Test builds signed with the debug key cannot be updated by a
   release build: sync the phone to a desktop first, uninstall, install the release, then re-pair
   (§9), and the library comes back.
@@ -1134,8 +1139,20 @@ Ids: `ja-ipadic`, `ko-kodic`.
   dictionaries, §9.6), so a paired device can get it from a peer instead of the internet. Packages are
   device-level assets: a synced `langdata` row is not needed, because a device fetches the package it
   needs when it opens a language that needs it and a peer advertises the hash.
-- Release builds turn off `embed-ipadic`/`embed-ko-dic`. Tests and `tauri dev` may keep them on
-  (feature `embed-langdata`) so the suite needs no download.
+- Release builds turn off `embed-ipadic`/`embed-ko-dic`. Cargo features: `alst-text` has `lang-ja`/`lang-ko` (the
+  engine, always on in the app) and `embed-ja`/`embed-ko` (compile the dictionary in), grouped as `embed-langdata`,
+  which is in `alst-text`'s defaults so `cargo test --workspace` needs no download. The app crate `src-tauri` has
+  an opt-in `embed-langdata` feature (`npm run tauri dev -- --features embed-langdata`); without it the app, in
+  development too, uses installed language data. A loaded directory wins over an embedded dictionary.
+- **Package layout:** flat zip (`langdata.json`, `LICENSE.txt`, `char_def.bin`, `dict.*`, `matrix.mtx`, `metadata.json`,
+  `unk.bin`); subfolders are refused. The pin's sha256 is of the zip, which is also its media-store id.
+- **Errors:** a language whose data is missing still loads; tokenizing returns `Error::LangData(id)`, and the shell
+  fails reader and import commands with the string `langdata:<id>`, which the UI turns into the download card.
+  Nothing is tokenized or cached without the data.
+- **Media record:** after an install the zip is kept in the media store with mime
+  `application/x-alstroemeria-langdata` (the media row syncs; peers always fetch such files, whatever their media
+  policy). A device installs a package whose zip is in its media store after a sync and at start. Disk cost is the
+  zip plus the unpacked files.
 - Licences of the data (IPADIC, ko-dic Apache-2.0) ship inside each package and in About.
 
 ### 17.4 Updates
@@ -1144,7 +1161,11 @@ Ids: `ja-ipadic`, `ko-kodic`.
   `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` (written by the release
   workflow), verified with the updater public key. Checks on start and every 24 h; Settings has
   "Check automatically" (default on) and "Check now". An update shows a banner with the changelog
-  section; installing restarts the app (`tauri-plugin-process`). Never installs silently.
+  section; installing restarts the app (Tauri's own `AppHandle::restart`, so no `tauri-plugin-process`). Never installs
+  silently. Signature checking is the plugin's: an artifact whose minisign signature doesn't verify against the key
+  in `tauri.conf.json` is refused (tested against the real plugin). The "Check automatically" setting is a
+  per-device `local_settings` row (`update_check`), and its controls sit in the About tab. Builds with
+  `createUpdaterArtifacts` need `TAURI_SIGNING_PRIVATE_KEY` (and its password) in the environment.
 - **Android:** no self-update. The app reads the same `latest.json` and, when a newer version exists,
   shows a banner that opens the release page in the browser to download the APK for its ABI.
 - Update checks are the app's only internet traffic besides importers and language data; Settings

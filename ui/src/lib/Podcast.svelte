@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorText } from "./langdata-state.svelte";
   import { api, type Feed } from "./api";
 
   let { language, onDone }: { language: string; onDone: () => void } = $props();
@@ -18,7 +19,7 @@
       feed = await api.podcastFeed(url.trim());
       feedUrl = url.trim();
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     } finally {
       busy = false;
     }
@@ -31,7 +32,7 @@
       await api.podcastImport(language, feedUrl, guid);
       onDone();
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     } finally {
       importing = null;
     }

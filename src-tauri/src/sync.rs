@@ -255,6 +255,10 @@ fn reconcile(ctx: &Arc<SyncCtx>) {
         let _ = crate::ext::reload(&state);
         changed.push("extensions");
     }
+    if crate::langdata::reconcile(&state) {
+        let _ = ctx.app.emit("langdata://changed", "");
+        changed.push("langdata");
+    }
     if !changed.is_empty() {
         let _ = ctx.app.emit("sync://applied", changed);
     }

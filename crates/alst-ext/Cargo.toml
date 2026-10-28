@@ -14,4 +14,4 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 ureq = "3"
 alst-core = { path = "../alst-core" }
 alst-dict = { path = "../alst-dict" }
-alst-text = { path = "../alst-text" }
+alst-text = { path = "../alst-text", default-features = false }

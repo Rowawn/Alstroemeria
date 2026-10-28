@@ -1,0 +1,147 @@
+name: Release
+
+# A tag `v<version>` builds every platform and uploads to a DRAFT release, with `latest.json` for the updater.
+# Review the draft, then publish it by hand. The tag must match the version in src-tauri/tauri.conf.json.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: v
+        name: Tag matches the app version and the changelog has notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          current=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$version" != "$current" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $current in tauri.conf.json (run scripts/bump-version.mjs)" >&2
+            exit 1
+          fi
+          node scripts/changelog-section.mjs "$version" > release-notes.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  desktop:
+    needs: check
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: ubuntu-22.04 # oldest supported runner, for glibc reach
+            args: ""
+            rust-targets: ""
+          - os: windows-latest
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Linux libraries for Tauri
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf
+      - run: npm ci
+      - run: npm run build:extensions
+      - id: notes
+        shell: bash
+        run: |
+          {
+            echo 'body<<NOTES_EOF'
+            cat release-notes.md
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Alstroemeria ${{ needs.check.outputs.version }}
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  android:
+    needs: [check, desktop] # the draft release exists once a desktop job has run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - run: npm run build:extensions
+      - name: Release keystore
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - name: Build APKs (per ABI, then universal) and the bundle
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          targets="aarch64 armv7 x86_64"
+          npm run tauri android build -- --apk --split-per-abi --ci --target $targets
+          npm run tauri android build -- --apk --ci --target $targets
+          npm run tauri android build -- --aab --ci --target $targets
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          out=src-tauri/gen/android/app/build/outputs
+          mkdir -p upload
+          cp "$out/apk/arm64/release/app-arm64-release.apk" "upload/Alstroemeria_${VERSION}_arm64-v8a.apk"
+          cp "$out/apk/arm/release/app-arm-release.apk" "upload/Alstroemeria_${VERSION}_armeabi-v7a.apk"
+          cp "$out/apk/x86_64/release/app-x86_64-release.apk" "upload/Alstroemeria_${VERSION}_x86_64.apk"
+          cp "$out/apk/universal/release/app-universal-release.apk" "upload/Alstroemeria_${VERSION}_universal.apk"
+          cp "$out/bundle/universalRelease/app-universal-release.aab" "upload/Alstroemeria_${VERSION}.aab"
+          gh release upload "$GITHUB_REF_NAME" upload/* --clobber
