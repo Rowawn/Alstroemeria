@@ -1,6 +1,6 @@
 //! Thin Tauri shell: commands delegate to `alst-core`, `alst-text` and `alst-dict`.
 
-use alst_core::{NewPart, NewWork, PartInfo, Store, Term, TermPatch, Work};
+use alst_core::{PartInfo, Store, Term, TermPatch, Work};
 use alst_dict::{DictInfo, LookupResult};
 use alst_text::export::{ExportRow, find_examples, to_tsv};
 use alst_text::import::{self, ImportedWork};
@@ -18,6 +18,7 @@ use tauri_plugin_opener::OpenerExt;
 mod ext;
 mod media;
 mod langdata;
+mod pack;
 mod sync;
 mod update;
 
@@ -41,6 +42,10 @@ pub(crate) struct AppState {
     sync: OnceLock<Arc<sync::SyncCtx>>,
     /// Language data downloads in progress, with their cancel flags (SPEC §17.3).
     langdata_jobs: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    /// Content packs open on the review screen, by handle (SPEC §10.3).
+    packs: Mutex<HashMap<String, pack::OpenPack>>,
+    /// A `.alpack` the OS asked us to open before the UI could take it.
+    pending_pack: Mutex<Option<String>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -52,6 +57,11 @@ fn err(e: impl std::fmt::Display) -> String {
 impl AppState {
     fn store(&self) -> Res<MutexGuard<'_, Store>> {
         self.store.lock().map_err(err)
+    }
+
+    /// What the shared importers need (`alst-pack::sources`).
+    fn env<'a>(&'a self, lang: &'a LanguageDef) -> alst_pack::sources::Env<'a> {
+        alst_pack::sources::Env { store: &self.store, media: &self.media, lang }
     }
 
     fn registry(&self) -> Res<RwLockReadGuard<'_, alst_ext::Registry>> {
@@ -117,44 +127,7 @@ fn header(request: &Request<'_>, name: &str) -> Res<String> {
 
 fn store_import(state: &AppState, language: &str, w: ImportedWork) -> Res<Work> {
     let lang = state.lang(language)?;
-    state.require_langdata(&lang)?;
-    let parts = w
-        .parts
-        .into_iter()
-        .map(|p| NewPart { word_count: lang.count_words(&p.text) as i64, title: p.title, text: p.text, media_hash: None, timing: None })
-        .collect();
-    state
-        .store()?
-        .create_work(NewWork {
-            language: language.into(),
-            title: w.title,
-            kind: w.kind.into(),
-            author: w.author,
-            source_url: w.source_url,
-            parts,
-        })
-        .map_err(err)
-}
-
-/// Store a work whose parts play `media_hash` (a media-store id); parts without times get none.
-fn store_media_work(state: &AppState, language: &str, w: alst_text::import::media::MediaWork, media_hash: Option<&str>) -> Res<Work> {
-    let lang = state.lang(language)?;
-    state.require_langdata(&lang)?;
-    let parts = w
-        .parts
-        .into_iter()
-        .map(|p| NewPart {
-            word_count: lang.count_words(&p.text) as i64,
-            title: p.title,
-            text: p.text,
-            media_hash: media_hash.map(String::from),
-            timing: p.timing,
-        })
-        .collect();
-    state
-        .store()?
-        .create_work(NewWork { language: language.into(), title: w.title, kind: w.kind.into(), author: w.author, source_url: w.source_url, parts })
-        .map_err(err)
+    state.env(&lang).store_text(w, &alst_pack::sources::Origin::default()).map_err(err)
 }
 
 // ---- languages and library ------------------------------------------------------------------
@@ -628,7 +601,14 @@ pub fn run() {
                 event_cursor,
                 sync: OnceLock::new(),
                 langdata_jobs: Mutex::new(HashMap::new()),
+                packs: Mutex::new(HashMap::new()),
+                pending_pack: Mutex::new(None),
             });
+            // Windows and Linux pass the file to open on the command line (macOS sends `RunEvent::Opened`).
+            #[cfg(desktop)]
+            if let (Some(state), Some(arg)) = (app.try_state::<AppState>(), std::env::args_os().nth(1)) {
+                pack::offer_path(app.handle(), PathBuf::from(arg), &state);
+            }
             if let Some(state) = app.try_state::<AppState>() {
                 langdata::reconcile(&state);
             }
@@ -650,6 +630,14 @@ pub fn run() {
             media::ytdlp_status,
             media::import_youtube,
             media::log_listen,
+            pack::pack_open_path,
+            pack::pack_open_upload,
+            pack::pack_plan,
+            pack::pack_run,
+            pack::pack_cancel,
+            pack::pack_close,
+            pack::list_packs,
+            pack::take_pending_pack,
             get_part_view,
             open_term,
             save_term,
@@ -700,6 +688,17 @@ pub fn run() {
             selftest_canary_start,
             selftest_canary_hits,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS: a double-clicked `.alpack` arrives as an Opened event.
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let tauri::RunEvent::Opened { urls } = &_event {
+                if let Some(state) = _app.try_state::<AppState>() {
+                    for path in urls.iter().filter_map(|u| u.to_file_path().ok()) {
+                        pack::offer_path(_app, path, &state);
+                    }
+                }
+            }
+        });
 }

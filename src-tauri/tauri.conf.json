@@ -59,6 +59,15 @@
     "android": {
       "versionCode": 101
     },
+    "fileAssociations": [
+      {
+        "ext": ["alpack"],
+        "name": "Alstroemeria content pack",
+        "description": "Alstroemeria content pack",
+        "mimeType": "application/x-alstroemeria-pack",
+        "role": "Viewer"
+      }
+    ],
     "category": "Education",
     "shortDescription": "Local-first language immersion reader",
     "longDescription": "Read, listen and learn languages from your own texts and media. Everything stays on your devices and syncs over your local network.",

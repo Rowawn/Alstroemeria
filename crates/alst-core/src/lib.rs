@@ -8,7 +8,7 @@ pub mod store;
 pub mod sync;
 pub mod update;
 
-pub use store::{DictionaryRow, EventRow, ExtPackageRow, ExtStateRow, MediaRow, NewPart, NewWork, Part, PartInfo, STATUSES, Store, Term, TermPatch, TermRef, TermStateRow, Work};
+pub use store::{DictionaryRow, EventRow, ExtPackageRow, ExtStateRow, MediaRow, NewPart, NewWork, PackRow, Part, PartInfo, STATUSES, SeedCounts, SeedTerm, Store, Term, TermPatch, TermRef, TermStateRow, Work, WorkPack};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Rowawn/Alstroemeria/schemas/pack.schema.json",
+  "title": "Alstroemeria content pack manifest (SPEC §10.1)",
+  "type": "object",
+  "required": ["format", "formatVersion", "id", "title", "language", "items"],
+  "properties": {
+    "format": { "const": "alstroemeria-pack" },
+    "formatVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "title": { "type": "string", "minLength": 1 },
+    "language": { "type": "string", "minLength": 1 },
+    "topic": { "type": "string" },
+    "level": { "type": "string" },
+    "description": { "type": "string" },
+    "createdBy": { "type": "string" },
+    "createdAt": { "type": "string" },
+    "items": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/item" } },
+    "vocab": { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/vocab" } }
+  },
+  "$defs": {
+    "httpUrl": { "type": "string", "pattern": "^[hH][tT][tT][pP][sS]?://\\S+$" },
+    "itemPath": { "type": "string", "pattern": "^items/[^\\\\:\\u0000]+$", "not": { "pattern": "(^|/)\\.{1,2}(/|$)|//" } },
+    "item": {
+      "type": "object",
+      "required": ["id", "kind", "title", "content"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["article", "podcast", "video", "book", "text", "subtitle", "lyrics"] },
+        "title": { "type": "string", "minLength": 1 },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "source": {
+          "type": "object",
+          "properties": {
+            "url": { "$ref": "#/$defs/httpUrl" },
+            "license": { "type": "string" },
+            "attribution": { "type": "string" }
+          }
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["mode", "strategy"],
+              "properties": {
+                "mode": { "const": "fetch" },
+                "strategy": { "enum": ["article", "rss-episode", "youtube-subs", "direct"] },
+                "guid": { "type": "string" },
+                "transcriptUrl": { "$ref": "#/$defs/httpUrl" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["mode", "path"],
+              "properties": {
+                "mode": { "const": "embedded" },
+                "path": { "$ref": "#/$defs/itemPath" },
+                "mediaPath": { "$ref": "#/$defs/itemPath" },
+                "timingPath": { "$ref": "#/$defs/itemPath" }
+              }
+            }
+          ]
+        },
+        "estimate": {
+          "type": "object",
+          "properties": {
+            "words": { "type": "integer", "minimum": 0 },
+            "minutes": { "type": "number", "minimum": 0 },
+            "transcript": { "type": "boolean" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "content": { "properties": { "mode": { "const": "fetch" } } } } },
+          "then": { "required": ["source"], "properties": { "source": { "required": ["url"] } } }
+        },
+        {
+          "if": { "properties": { "content": { "properties": { "strategy": { "const": "rss-episode" } } } }, "required": ["content"] },
+          "then": { "properties": { "content": { "required": ["guid"] } } }
+        }
+      ]
+    },
+    "vocab": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "translation": { "type": "string" },
+        "reading": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

@@ -3,8 +3,12 @@
   import { needsLangData } from "./langdata-state.svelte";
   import { onMount } from "svelte";
   import { sync } from "./sync.svelte";
-  import { api, type Language, type PartInfo, type Work } from "./api";
+  import { api, type Language, type PackInfo, type PackOpened, type PartInfo, type Work } from "./api";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { errorText } from "./langdata-state.svelte";
+  import { packInbox } from "./pack-inbox.svelte";
   import MediaImport from "./MediaImport.svelte";
+  import PackReview from "./PackReview.svelte";
   import Podcast from "./Podcast.svelte";
   import YouTube from "./YouTube.svelte";
 
@@ -25,9 +29,77 @@
   let error = $state("");
   let langdataId = $state("");
 
+  // Content packs (SPEC §10): the review screen, the pack filter and the pack view.
+  let packs = $state<PackInfo[]>([]);
+  let packFilter = $state(""); // "" all, "none" works without a pack, or a pack id
+  let opened = $state<PackOpened | null>(null);
+  let packError = $state("");
+  let packBusy = $state(false);
+  let dragging = $state(false);
+
+  const shown = $derived(packFilter === "" ? works : works.filter((w) => (packFilter === "none" ? !w.packId : w.packId === packFilter)));
+  const activePack = $derived(packs.find((p) => p.id === packFilter) ?? null);
+
   async function refresh() {
     works = await api.works();
+    packs = await api.packs().catch(() => []);
   }
+
+  async function openPack(open: () => Promise<PackOpened>) {
+    packError = "";
+    packBusy = true;
+    try {
+      if (opened) await api.packClose(opened.handle).catch(() => {});
+      opened = await open();
+    } catch (e) {
+      opened = null;
+      packError = errorText(e);
+    } finally {
+      packBusy = false;
+    }
+  }
+  const openPackFile = (f: File) => openPack(() => api.packOpenFile(f));
+  const openPackPath = (path: string) => openPack(() => api.packOpenPath(path));
+
+  function pickPack(e: Event & { currentTarget: HTMLInputElement }) {
+    const f = e.currentTarget.files?.[0];
+    e.currentTarget.value = "";
+    if (f) void openPackFile(f);
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    dragging = false;
+    const f = [...(e.dataTransfer?.files ?? [])].find((f) => f.name.toLowerCase().endsWith(".alpack"));
+    if (f) void openPackFile(f);
+  }
+
+  $effect(() => {
+    const p = packInbox.path;
+    if (p) {
+      packInbox.path = null;
+      void openPackPath(p);
+    }
+  });
+
+  // The desktop webview delivers dropped files as paths through its own event.
+  onMount(() => {
+    let off: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const t = e.payload.type;
+        if (t === "enter" || t === "over") dragging = true;
+        else if (t === "leave") dragging = false;
+        else if (t === "drop") {
+          dragging = false;
+          const path = e.payload.paths.find((p) => p.toLowerCase().endsWith(".alpack"));
+          if (path) void openPackPath(path);
+        }
+      })
+      .then((f) => (off = f))
+      .catch(() => {});
+    return () => off?.();
+  });
 
   async function open(w: Work) {
     const ps = await api.parts(w.id);
@@ -73,13 +145,56 @@
   });
 </script>
 
-<h1>Library</h1>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="drop" class:dragging ondragover={(e) => { e.preventDefault(); dragging = true; }} ondragleave={() => (dragging = false)} ondrop={onDrop}>
+<div class="row head">
+  <h1>Library</h1>
+  <label class="button">
+    {packBusy ? "Opening…" : "Import pack…"}
+    <input type="file" hidden onchange={pickPack} disabled={packBusy} />
+  </label>
+</div>
+{#if packError}<p class="error">{packError}</p>{/if}
+{#if opened}
+  {#key opened.handle}
+    <PackReview {opened} onChanged={refresh} onClose={() => (opened = null)} />
+  {/key}
+{/if}
 
-{#if works.length === 0}
+{#if packs.length > 0}
+  <label class="row">
+    Show
+    <select bind:value={packFilter}>
+      <option value="">All works</option>
+      <option value="none">Not from a pack</option>
+      {#each packs as p (p.id)}<option value={p.id}>Pack: {p.title}</option>{/each}
+    </select>
+  </label>
+{/if}
+{#if activePack}
+  <section class="packview">
+    <strong>{activePack.title}</strong>
+    <span class="muted">{activePack.language}{activePack.level ? ` · ${activePack.level}` : ""}{activePack.topic ? ` · ${activePack.topic}` : ""} · {shown.length} of {activePack.itemCount} items imported here</span>
+    {#if activePack.description}<p>{activePack.description}</p>{/if}
+    <ul class="attrib">
+      {#each shown as w (w.id)}
+        <li>
+          {w.title}
+          <span class="muted">— {w.attribution ?? "no attribution"}{w.sourceLicense ? ` · ${w.sourceLicense}` : ""}</span>
+          {#if w.sourceUrl}<button class="link" onclick={() => api.openUrl(w.sourceUrl!)}>source</button>{/if}
+        </li>
+      {/each}
+    </ul>
+  </section>
+{/if}
+
+{#if shown.length === 0 && works.length > 0}
+  <p class="muted">No works match this filter.</p>
+{:else if works.length === 0}
   <p class="muted">Nothing here yet. Add a text, an EPUB, a web article, or audio/video with subtitles below.</p>
 {:else}
   <ul class="works">
-    {#each works as w (w.id)}
+    {#each shown as w (w.id)}
       <li>
         <button class="work" onclick={() => open(w)}>
           <strong>{w.title}</strong>
@@ -141,8 +256,45 @@
   {#if langdataId}<LangData id={langdataId} />{:else if error}<p class="error">{error}</p>{/if}
 </form>
 {/if}
+</div>
 
 <style>
+  .drop {
+    border: 2px dashed transparent;
+    border-radius: 10px;
+  }
+  .drop.dragging {
+    border-color: var(--accent);
+  }
+  .head {
+    align-items: center;
+    justify-content: space-between;
+  }
+  .button {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.3rem 0.7rem;
+  }
+  .packview {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin: 0.5rem 0 0.8rem;
+  }
+  .attrib {
+    margin: 0.3rem 0 0;
+    padding-left: 1.2rem;
+    font-size: 0.9rem;
+  }
+  .link {
+    border: none;
+    background: none;
+    color: var(--accent);
+    padding: 0 0.3rem;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   .works,
   .parts {
     list-style: none;

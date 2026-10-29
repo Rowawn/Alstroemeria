@@ -109,6 +109,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "alst-pack"
+version = "0.1.0"
+dependencies = [
+ "alst-core",
+ "alst-text",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "alst-sync"
 version = "0.1.0"
 dependencies = [
@@ -149,6 +161,7 @@ dependencies = [
  "alst-core",
  "alst-dict",
  "alst-ext",
+ "alst-pack",
  "alst-sync",
  "alst-text",
  "percent-encoding",

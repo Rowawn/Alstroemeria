@@ -24,6 +24,69 @@ export type Work = {
   sourceUrl: string | null;
   createdAt: number;
   partCount: number;
+  /** Set for works imported from a content pack (SPEC §10). */
+  packId: string | null;
+  packItem: string | null;
+  sourceLicense: string | null;
+  attribution: string | null;
+};
+export type PackStatus = "ready" | "needs-desktop" | "already-imported" | "license-warning";
+export type PackPlanItem = {
+  id: string;
+  kind: string;
+  title: string;
+  tags: string[];
+  how: string;
+  domain: string | null;
+  license: string | null;
+  attribution: string | null;
+  words: number | null;
+  minutes: number | null;
+  transcript: boolean | null;
+  status: PackStatus;
+  checked: boolean;
+};
+export type SeedCounts = { new: number; fill: number; existing: number };
+export type PackPlan = {
+  id: string;
+  title: string;
+  language: string;
+  topic: string | null;
+  level: string | null;
+  description: string | null;
+  createdBy: string | null;
+  createdAt: string | null;
+  items: PackPlanItem[];
+  vocabTotal: number;
+  vocab: SeedCounts;
+  languageInstalled: boolean;
+};
+export type PackOpened = { handle: string; plan: PackPlan };
+export type PackProgress = {
+  handle: string;
+  itemId: string;
+  index: number;
+  total: number;
+  state: "started" | "done" | "skipped" | "failed";
+  error: string | null;
+  workId: string | null;
+};
+export type PackReport = {
+  imported: [string, string][];
+  skipped: string[];
+  failed: { itemId: string; error: string }[];
+  vocab: SeedCounts | null;
+  cancelled: boolean;
+};
+export type PackInfo = {
+  id: string;
+  title: string;
+  language: string;
+  topic: string | null;
+  level: string | null;
+  description: string | null;
+  createdBy: string | null;
+  itemCount: number;
 };
 export type PartInfo = { id: string; idx: number; title: string | null; wordCount: number };
 export type Unit = {
@@ -163,6 +226,17 @@ export const api = {
       },
     });
   },
+  packs: () => invoke<PackInfo[]>("list_packs"),
+  packOpenPath: (path: string) => invoke<PackOpened>("pack_open_path", { path }),
+  packOpenFile: async (file: File, onProgress?: (f: number) => void) => {
+    const uploadId = await uploadMedia(file, onProgress);
+    return invoke<PackOpened>("pack_open_upload", { uploadId });
+  },
+  packPlan: (handle: string) => invoke<PackPlan>("pack_plan", { handle }),
+  packRun: (handle: string, items: string[], seedVocab: boolean) => invoke<PackReport>("pack_run", { handle, items, seedVocab }),
+  packCancel: (handle: string) => invoke<void>("pack_cancel", { handle }),
+  packClose: (handle: string) => invoke<void>("pack_close", { handle }),
+  takePendingPack: () => invoke<string | null>("take_pending_pack"),
   podcastFeed: (url: string) => invoke<Feed>("podcast_feed", { url }),
   podcastImport: (language: string, feedUrl: string, guid: string) => invoke<Work>("podcast_import", { language, feedUrl, guid }),
   ytdlpStatus: () => invoke<{ available: boolean; version: string | null }>("ytdlp_status"),

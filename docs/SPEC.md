@@ -925,6 +925,25 @@ fetching and only return short summaries.
 - **Output:** `packs/<language>-<topic-slug>.alpack` (the `packs/` folder is gitignored) and a short summary
   table of items.
 
+### 10.7 Implementation notes (M8)
+
+- **Code:** `alst-pack::manifest` (parse and validate; `schemas/pack.schema.json` documents the same rules, the Rust code is
+  the authority), `pack` (zip safety), `plan`, `run`, `sources` (the shared fetch-and-store path: article, podcast episode,
+  YouTube, media file with cues or text, file by type). The Tauri shell's `import_media_file`, `podcast_import` and
+  `import_youtube` call `sources`; `store_import` goes through `Env::store_text`.
+- A work's `kind` comes from the importer (`article`, `audio`, `video`, `subtitle`, `lyrics`, `text`, `epub`), not from the pack item's
+  `kind`, which is only a category for the review screen. The item's `title` replaces the importer's title.
+- `direct` and embedded `path` choose the importer by extension: `.epub`, `.md`/`.markdown`, `.txt`, `.srt`/`.vtt`/`.lrc` (text-only
+  work without media), and audio/video by extension, which then needs `transcriptUrl` (or, embedded, `mediaPath` plus a cue file
+  as `timingPath`, or as `path` itself, else the plain text of `path`). An address without a known extension is refused.
+- `works` gets `pack_item`; `pack_id`, `source_license` and `settings.attribution` are written with the work
+  (`Store::create_work_in_pack`). `packs.manifest` keeps the manifest JSON of the newest imported version.
+- Language data missing (`langdata:<id>`) stops a run instead of failing every item.
+- Cancelling takes effect before the next item; a download in progress finishes first.
+- The desktop file association passes the path to the UI (`alst:open-pack`, or `take_pending_pack` when the UI was not ready).
+  On Android a pack is opened with the file picker; the file is uploaded in chunks and staged like other uploads.
+- `scripts/pack/{probe,rss,yt,build}.mjs`; `probe`, `rss` and `build` call `cargo run -p alst-pack --example probe`.
+
 ## 11. Anki and the SRS module
 
 **Now (M2):** export terms and sentences to Anki-importable TSV. Desktop: AnkiConnect exporter.

@@ -1,0 +1,13 @@
+[package]
+name = "alst-pack"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+alst-core = { path = "../alst-core" }
+alst-text = { path = "../alst-text", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zip = { version = "4", default-features = false, features = ["deflate"] }

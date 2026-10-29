@@ -69,6 +69,11 @@ impl MediaDir {
         f.write_all(chunk).map_err(io)
     }
 
+    /// Path of a staged upload, for writing a file into it directly (then `finish`).
+    pub fn staged_path(&self, id: &str) -> Result<PathBuf> {
+        self.tmp_path(id)
+    }
+
     /// Drop a staged upload (after a failed import).
     pub fn abort(&self, id: &str) {
         if let Ok(p) = self.tmp_path(id) {

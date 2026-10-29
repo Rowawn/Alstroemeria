@@ -30,6 +30,7 @@ alst-text = { path = "../crates/alst-text", default-features = false, features =
 alst-dict = { path = "../crates/alst-dict" }
 alst-ext = { path = "../crates/alst-ext" }
 alst-sync = { path = "../crates/alst-sync" }
+alst-pack = { path = "../crates/alst-pack" }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tauri-plugin-opener = "2"
 percent-encoding = "2"

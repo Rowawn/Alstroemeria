@@ -464,6 +464,13 @@
         {/if}
       </div>
 
+      {#if idx === view.parts.length - 1 && (view.work.attribution || view.work.sourceLicense)}
+        <p class="attribution muted">
+          Source: {view.work.attribution ?? view.work.author ?? ""}{view.work.sourceLicense && view.work.sourceLicense !== "unknown" ? ` (${view.work.sourceLicense})` : ""}
+          {#if view.work.sourceUrl}<button class="link" onclick={() => api.openUrl(view!.work.sourceUrl!)}>{view.work.sourceUrl}</button>{/if}
+        </p>
+      {/if}
+
       <div class="row bar">
         <button disabled={idx <= 0} onclick={() => onOpen(view!.parts[idx - 1].id)}>‹ Previous</button>
         <button onclick={() => (finishing = true)}>Finish part ✓</button>
@@ -645,6 +652,19 @@
     display: flex;
     flex-direction: column;
     gap: 0.8rem;
+  }
+  .attribution {
+    font-size: 0.85rem;
+    margin: 0.8rem 0 0;
+    word-break: break-all;
+  }
+  .attribution .link {
+    border: none;
+    background: none;
+    color: var(--accent);
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .finish {
     border: 1px solid var(--border);

@@ -1,15 +1,15 @@
 //! SPEC §9.5: N devices make random writes interleaved with random pairwise sessions (some cut off mid-batch).
 //! After a final round of full syncs every device has identical synced tables, `_changes` and `events`.
 
-use alst_core::{NewWork, Store, TermPatch, store::derive_id, store::term_id, store::WorkCol};
+use alst_core::{NewWork, PackRow, SeedTerm, Store, WorkPack, TermPatch, store::derive_id, store::term_id, store::WorkCol};
 use alst_sync::proto::mem;
 use alst_sync::session::{Role, SessionConfig, run};
 use proptest::prelude::*;
 use std::sync::Mutex;
 
-const SYNCED: [&str; 11] = [
+const SYNCED: [&str; 12] = [
     "works", "parts", "concepts", "terms", "term_parents", "media", "extension_state", "ext_data", "settings", "dictionaries",
-    "extension_packages",
+    "extension_packages", "packs",
 ];
 
 fn dump(s: &Mutex<Store>) -> String {
@@ -281,5 +281,39 @@ proptest! {
         let (ra, rb) = (assert_converged(&a), assert_converged(&b));
         std::fs::remove_dir_all(&base).ok();
         prop_assert_eq!(ra, rb);
+    }
+}
+
+fn pack_row() -> PackRow {
+    PackRow { id: "pack-1".into(), title: "Automoción".into(), language: "es".into(), topic: None, level: Some("B1".into()), description: None, created_by: None, version_at: None, manifest: "{}".into() }
+}
+
+fn seed(text: &str, tr: &str) -> SeedTerm {
+    SeedTerm { text: text.into(), text_lc: text.into(), word_count: 1, translation: tr.into(), reading: String::new(), notes: String::new() }
+}
+
+/// Two devices import the same pack offline: the pack and the seed terms merge (derived ids), and after syncing
+/// each device sees the other's items as imported, so a re-import adds nothing twice.
+#[test]
+fn two_devices_importing_the_same_pack_converge() {
+    let st = stores(2);
+    let item = |id: &str| WorkPack { pack_id: "pack-1".into(), pack_item: id.into(), license: Some("CC0-1.0".into()), attribution: Some("Ana".into()) };
+    for (d, items) in [(0, ["a1", "a2"]), (1, ["a1", "a3"])] {
+        let mut s = st[d].lock().unwrap();
+        s.put_pack(&pack_row()).unwrap();
+        s.seed_terms("es", &[seed("bujía", "spark plug"), seed("freno", "brake")]).unwrap();
+        for it in items {
+            s.create_work_in_pack(NewWork::text("es", it, "uno dos"), Some(&item(it))).unwrap();
+        }
+    }
+    full_round(&st, 500);
+    assert_converged(&st);
+    for s in &st {
+        let s = s.lock().unwrap();
+        assert_eq!(s.packs().unwrap().len(), 1);
+        let n: i64 = s.local_conn().query_row("SELECT count(*) FROM terms", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let done = s.imported_pack_items("pack-1").unwrap();
+        assert!(["a1", "a2", "a3"].iter().all(|i| done.contains(*i)));
     }
 }

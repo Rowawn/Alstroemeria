@@ -58,6 +58,58 @@ pub struct Work {
     pub source_url: Option<String>,
     pub created_at: i64,
     pub part_count: i64,
+    /// Set for works imported from a content pack (SPEC §10.3, §10.4).
+    pub pack_id: Option<String>,
+    pub pack_item: Option<String>,
+    pub source_license: Option<String>,
+    pub attribution: Option<String>,
+}
+
+/// Where a pack work came from; written with the work by [`Store::create_work_in_pack`].
+#[derive(Debug, Clone)]
+pub struct WorkPack {
+    pub pack_id: String,
+    pub pack_item: String,
+    pub license: Option<String>,
+    pub attribution: Option<String>,
+}
+
+/// A row of `packs`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackRow {
+    pub id: String,
+    pub title: String,
+    pub language: String,
+    pub topic: Option<String>,
+    pub level: Option<String>,
+    pub description: Option<String>,
+    pub created_by: Option<String>,
+    pub version_at: Option<String>,
+    /// The manifest json.
+    pub manifest: String,
+}
+
+/// One seed vocabulary entry with the keys the language computed for it (SPEC §10.3).
+#[derive(Debug, Clone)]
+pub struct SeedTerm {
+    pub text: String,
+    pub text_lc: String,
+    pub word_count: i64,
+    pub translation: String,
+    pub reading: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedCounts {
+    /// No term yet: would be created at status 0.
+    pub new: usize,
+    /// A term exists and has an empty translation, reading or notes this entry would fill.
+    pub fill: usize,
+    /// A term exists with nothing to fill.
+    pub existing: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,6 +316,12 @@ impl Store {
 
     /// Insert a work and its parts, recording every column in `_changes`.
     pub fn create_work(&mut self, new: NewWork) -> Result<Work> {
+        self.create_work_in_pack(new, None)
+    }
+
+    /// [`Self::create_work`] for a pack item: also writes `pack_id`, `pack_item`, `source_license` and
+    /// `settings.attribution`.
+    pub fn create_work_in_pack(&mut self, new: NewWork, pack: Option<&WorkPack>) -> Result<Work> {
         if new.title.trim().is_empty() {
             return Err(Error::Invalid("title is required".into()));
         }
@@ -292,6 +350,17 @@ impl Store {
         }
         if let Some(u) = &new.source_url {
             work_cols.push(("source_url", u.clone().into()));
+        }
+        if let Some(p) = pack {
+            work_cols.push(("pack_id", p.pack_id.clone().into()));
+            work_cols.push(("pack_item", p.pack_item.clone().into()));
+            if let Some(l) = &p.license {
+                work_cols.push(("source_license", l.clone().into()));
+            }
+            if let Some(a) = &p.attribution {
+                let settings = serde_json::json!({ "attribution": a }).to_string();
+                work_cols.iter_mut().find(|(n, _)| *n == "settings").expect("settings column").1 = settings.into();
+            }
         }
         insert_row(&tx, "works", &work_id, &work_cols, stamp, &site)?;
 
@@ -326,6 +395,10 @@ impl Store {
             source_url: new.source_url,
             created_at: created,
             part_count: new.parts.len() as i64,
+            pack_id: pack.map(|p| p.pack_id.clone()),
+            pack_item: pack.map(|p| p.pack_item.clone()),
+            source_license: pack.and_then(|p| p.license.clone()),
+            attribution: pack.and_then(|p| p.attribution.clone()),
         })
     }
 
@@ -346,7 +419,8 @@ impl Store {
     pub fn list_works(&self) -> Result<Vec<Work>> {
         let mut stmt = self.conn.prepare(
             "SELECT w.id, w.language, w.title, w.kind, w.author, w.source_url, w.created_at,
-                    (SELECT count(*) FROM parts p WHERE p.work_id = w.id AND p.deleted = 0)
+                    (SELECT count(*) FROM parts p WHERE p.work_id = w.id AND p.deleted = 0),
+                    w.pack_id, w.pack_item, w.source_license, json_extract(w.settings, '$.attribution')
              FROM works w WHERE w.deleted = 0 AND w.archived = 0 ORDER BY w.created_at DESC, w.id DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -359,6 +433,10 @@ impl Store {
                 source_url: r.get(5)?,
                 created_at: r.get(6)?,
                 part_count: r.get(7)?,
+                pack_id: r.get(8)?,
+                pack_item: r.get(9)?,
+                source_license: r.get(10)?,
+                attribution: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -961,6 +1039,106 @@ impl Store {
         self.tombstone("extension_packages", ext_id)
     }
 
+    // ---- content packs (SPEC §10.3) --------------------------------------------------------------
+
+    /// Record (or update, for a newer version of the same pack) an imported pack.
+    pub fn put_pack(&mut self, row: &PackRow) -> Result<()> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let opt = |v: &Option<String>| -> Value { v.clone().map_or(Value::Null, Value::Text) };
+        let cols: Vec<(&str, Value)> = vec![
+            ("created_at", (hlc::wall_ms() as i64).into()),
+            ("deleted", 0.into()),
+            ("title", row.title.clone().into()),
+            ("language", row.language.clone().into()),
+            ("topic", opt(&row.topic)),
+            ("level", opt(&row.level)),
+            ("description", opt(&row.description)),
+            ("created_by", opt(&row.created_by)),
+            ("version_at", opt(&row.version_at)),
+            ("manifest", row.manifest.clone().into()),
+        ];
+        put_row(&tx, "packs", &row.id, &cols, stamp, &site)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn packs(&self) -> Result<Vec<PackRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, language, topic, level, description, created_by, version_at, manifest
+             FROM packs WHERE deleted = 0 ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(PackRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                language: r.get(2)?,
+                topic: r.get(3)?,
+                level: r.get(4)?,
+                description: r.get(5)?,
+                created_by: r.get(6)?,
+                version_at: r.get(7)?,
+                manifest: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Item ids of `pack_id` that already have a work on this device (including works that arrived by sync).
+    pub fn imported_pack_items(&self, pack_id: &str) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT pack_item FROM works WHERE pack_id = ?1 AND pack_item IS NOT NULL AND deleted = 0")?;
+        Ok(stmt.query_map([pack_id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// What [`Self::seed_terms`] would do, without writing.
+    pub fn seed_counts(&self, language: &str, items: &[SeedTerm]) -> Result<SeedCounts> {
+        let mut c = SeedCounts::default();
+        for it in items {
+            match find_term(&self.conn, language, &it.text_lc)? {
+                None => c.new += 1,
+                Some(id) => {
+                    if !seed_fills(&self.conn, &id, it)?.is_empty() {
+                        c.fill += 1;
+                    } else {
+                        c.existing += 1;
+                    }
+                }
+            }
+        }
+        Ok(c)
+    }
+
+    /// Seed vocabulary: create missing terms at status 0 and fill only empty `translation`, `reading` and
+    /// `notes` of existing ones. Never changes a status.
+    pub fn seed_terms(&mut self, language: &str, items: &[SeedTerm]) -> Result<SeedCounts> {
+        let stamp = self.clock.tick(hlc::wall_ms());
+        let site = self.site_id.clone();
+        let tx = self.conn.transaction()?;
+        let mut c = SeedCounts::default();
+        let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
+        for it in items {
+            match find_term(&tx, language, &it.text_lc)? {
+                None => {
+                    let patch = TermPatch { status: Some(0), translation: some(&it.translation), reading: some(&it.reading), notes: some(&it.notes), lemma: None };
+                    upsert_term(&tx, &site, stamp, language, &it.text, &it.text_lc, it.word_count, &patch, true)?;
+                    c.new += 1;
+                }
+                Some(id) => {
+                    let changes = seed_fills(&tx, &id, it)?;
+                    if changes.is_empty() {
+                        c.existing += 1;
+                    } else {
+                        update_cols(&tx, "terms", &id, &changes, stamp, &site)?;
+                        c.fill += 1;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(c)
+    }
+
     fn tombstone(&mut self, tbl: &str, id: &str) -> Result<bool> {
         let stamp = self.clock.tick(hlc::wall_ms());
         let site = self.site_id.clone();
@@ -1002,6 +1180,19 @@ impl WorkCol {
             WorkCol::Deleted => "deleted",
         }
     }
+}
+
+/// Columns of an existing term that a seed entry would fill (only where the term has nothing).
+fn seed_fills(conn: &Connection, id: &str, it: &SeedTerm) -> Result<Vec<(&'static str, Value)>> {
+    let (tr, rd, nt): (Option<String>, Option<String>, Option<String>) =
+        conn.query_row("SELECT translation, reading, notes FROM terms WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let mut out = Vec::new();
+    for (name, new, old) in [("translation", &it.translation, tr), ("reading", &it.reading, rd), ("notes", &it.notes, nt)] {
+        if !new.trim().is_empty() && old.as_deref().is_none_or(|o| o.trim().is_empty()) {
+            out.push((name, Value::Text(new.trim().to_string())));
+        }
+    }
+    Ok(out)
 }
 
 fn validate_patch(p: &TermPatch) -> Result<()> {
@@ -1468,5 +1659,40 @@ mod tests {
         assert_eq!(q("gat", Some(2)), vec!["gatito"]);
         let id = s.find_term("es", "gato").unwrap().unwrap().id;
         assert_eq!(s.get_term(&id).unwrap().translation.as_deref(), Some("cat"));
+    }
+
+    #[test]
+    fn pack_work_records_origin_and_attribution() {
+        let mut s = Store::open_in_memory().unwrap();
+        let pack = WorkPack { pack_id: "p".into(), pack_item: "a1".into(), license: Some("CC-BY-4.0".into()), attribution: Some("El País".into()) };
+        let w = s.create_work_in_pack(sample(), Some(&pack)).unwrap();
+        let got = s.get_work(&w.id).unwrap();
+        assert_eq!((got.pack_id.as_deref(), got.pack_item.as_deref(), got.source_license.as_deref(), got.attribution.as_deref()), (Some("p"), Some("a1"), Some("CC-BY-4.0"), Some("El País")));
+        assert!(s.imported_pack_items("p").unwrap().contains("a1"));
+        assert!(s.imported_pack_items("other").unwrap().is_empty());
+        // A plain work has none of it.
+        let plain = s.create_work(sample()).unwrap();
+        assert_eq!(s.get_work(&plain.id).unwrap().pack_id, None);
+    }
+
+    fn seed(text: &str, tr: &str, nt: &str) -> SeedTerm {
+        SeedTerm { text: text.into(), text_lc: text.to_lowercase(), word_count: 1, translation: tr.into(), reading: String::new(), notes: nt.into() }
+    }
+
+    #[test]
+    fn seed_creates_at_status_zero_fills_only_empty_fields_and_never_changes_status() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.save_term("es", "gato", "gato", 1, &TermPatch { status: Some(3), ..Default::default() }).unwrap();
+        s.save_term("es", "perro", "perro", 1, &TermPatch { status: Some(2), translation: Some("dog".into()), ..Default::default() }).unwrap();
+        let items = [seed("bujía", "spark plug", ""), seed("gato", "cat", "n1"), seed("perro", "hound", "n2")];
+        assert_eq!(s.seed_counts("es", &items).unwrap(), SeedCounts { new: 1, fill: 2, existing: 0 });
+        assert_eq!(s.seed_terms("es", &items).unwrap(), SeedCounts { new: 1, fill: 2, existing: 0 });
+        let t = |k: &str| s.find_term("es", k).unwrap().unwrap();
+        assert_eq!((t("bujía").status, t("bujía").translation.as_deref()), (0, Some("spark plug")));
+        assert_eq!((t("gato").status, t("gato").translation.as_deref(), t("gato").notes.as_deref()), (3, Some("cat"), Some("n1")));
+        // An existing translation is kept; only the empty notes were filled.
+        assert_eq!((t("perro").status, t("perro").translation.as_deref(), t("perro").notes.as_deref()), (2, Some("dog"), Some("n2")));
+        // Seeding again changes nothing.
+        assert_eq!(s.seed_terms("es", &items).unwrap(), SeedCounts { new: 0, fill: 0, existing: 3 });
     }
 }

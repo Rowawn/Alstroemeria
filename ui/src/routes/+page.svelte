@@ -14,6 +14,7 @@
   import Languages from "$lib/Languages.svelte";
   import Library from "$lib/Library.svelte";
   import Reader from "$lib/Reader.svelte";
+  import { packInbox } from "$lib/pack-inbox.svelte";
   import { sync } from "$lib/sync.svelte";
   import UpdateBanner from "$lib/UpdateBanner.svelte";
   import Toasts from "$lib/Toasts.svelte";
@@ -27,6 +28,14 @@
     // Core and extension events reach running extensions that may see them (SPEC §6.9.4).
     sync.start();
     const unlisten = listen<CoreEvent>("alst:event", (e) => extHost.deliverEvent(e.payload));
+    // A double-clicked `.alpack` (file association): show the Library, which opens the review screen.
+    const openPack = (path: string) => {
+      partId = null;
+      tab = "library";
+      packInbox.path = path;
+    };
+    const unlistenPack = listen<string>("alst:open-pack", (e) => openPack(e.payload));
+    api.takePendingPack().then((p) => p && openPack(p)).catch(() => {});
     api
       .languages()
       .then(async (l) => {
@@ -45,7 +54,10 @@
         }
       })
       .catch((e) => (error = String(e)));
-    return () => void unlisten.then((fn) => fn());
+    return () => {
+      void unlisten.then((fn) => fn());
+      void unlistenPack.then((fn) => fn());
+    };
   });
 </script>
 

@@ -1,19 +1,15 @@
 //! Media commands and the `alstmedia://` protocol (SPEC §8). Logic lives in `alst-core::media` and
 //! `alst-text`; this only wires it to Tauri.
 
-use crate::{AppState, Res, err, header, raw_body, store_media_work};
+use crate::{AppState, Res, err, header, raw_body};
 use alst_core::{Work, media as core_media};
-use alst_text::cues;
-use alst_text::import::media::{self as import_media, MediaPart};
+use alst_pack::sources::{self, Origin, StoredMedia};
 use alst_text::import::{rss, ytdlp};
 use serde::Serialize;
-use std::time::Duration;
 use tauri::http::{Request as HttpRequest, Response, StatusCode};
 use tauri::ipc::Request;
 use tauri::{Manager, State, UriSchemeContext, Wry};
 
-/// Largest media file we import (bounds disk use and a runaway download).
-const MAX_MEDIA_BYTES: u64 = 2 << 30;
 /// Largest slice answered to one `alstmedia://` request, so a plain GET of a big file can't fill memory.
 const MAX_SLICE: u64 = 8 << 20;
 
@@ -42,16 +38,12 @@ pub async fn import_media_file(state: State<'_, AppState>, request: Request<'_>)
     let hint = header(&request, "x-media-type").unwrap_or_default();
     let sub_name = header(&request, "x-subtitle-name").unwrap_or_default();
     let sub_bytes = raw_body(&request)?.into_owned();
-    state.lang(&language)?;
+    let lang = state.lang(&language)?;
     let result = (|| {
         let mime = core_media::mime_for(&name, &hint).ok_or("that file is not audio or video")?;
-        let file = cues::parse(&sub_name, &sub_bytes, false).map_err(err)?;
-        let kind = if sub_name.to_lowercase().ends_with(".lrc") { "lyrics" } else if mime.starts_with("video/") { "video" } else { "audio" };
-        let title = if title.trim().is_empty() && file.title.is_none() { name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s).to_string() } else { title.clone() };
         let (hash, size) = state.media.finish(&upload).map_err(err)?;
-        state.store()?.register_media(&hash, &mime, size as i64, Some(&name)).map_err(err)?;
-        let work = import_media::from_cue_file(&title, kind, file, None);
-        store_media_work(&state, &language, work, Some(&hash))
+        let media = StoredMedia { hash, size, mime, name: Some(name.clone()) };
+        sources::import_media_with_cues(&state.env(&lang), &media, &sub_name, &sub_bytes, &title, None, &Origin::default()).map_err(err)
     })();
     if result.is_err() {
         state.media.abort(&upload);
@@ -67,34 +59,17 @@ pub async fn podcast_feed(url: String) -> Res<rss::Feed> {
 }
 
 /// Import one episode: its audio goes to the media store and its transcript becomes the parts.
-/// The feed is fetched again so only data from the feed itself is trusted.
 #[tauri::command]
 pub async fn podcast_import(state: State<'_, AppState>, language: String, feed_url: String, guid: String) -> Res<Work> {
-    state.lang(&language)?;
-    let media = state.media.clone();
-    let (feed, ep, parts, hash, size, mime) = tauri::async_runtime::spawn_blocking(move || -> Res<_> {
-        let feed = rss::fetch_feed(&feed_url).map_err(err)?;
-        let ep = feed.episodes.iter().find(|e| e.guid == guid).cloned().ok_or("episode not found in the feed")?;
-        let t = ep.best_transcript().ok_or("this episode has no transcript in the feed")?.clone();
-        let audio = ep.audio_url.clone().ok_or("this episode has no audio file")?;
-        let bytes = rss::fetch_bytes(&t.url, 16 << 20, Duration::from_secs(60)).map_err(err)?;
-        let parts: Vec<MediaPart> = rss::transcript_parts(&t, &bytes).map_err(err)?;
-        let reader = rss::open(&audio, Duration::from_secs(60 * 60)).map_err(err)?;
-        let (hash, size) = media.put_reader(reader, MAX_MEDIA_BYTES).map_err(err)?;
-        let mime = core_media::mime_for(audio.split(['?', '#']).next().unwrap_or(""), ep.audio_type.as_deref().unwrap_or("")).unwrap_or_else(|| "audio/mpeg".into());
-        Ok((feed, ep, parts, hash, size, mime))
+    let lang = state.lang(&language)?;
+    let (store, media) = (state.store.clone(), state.media.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = sources::Env { store: &store, media: &media, lang: &lang };
+        sources::import_podcast_episode(&env, &feed_url, &guid, &Origin::default())
     })
     .await
-    .map_err(err)??;
-    state.store()?.register_media(&hash, &mime, size as i64, ep.audio_url.as_deref().and_then(|u| u.split(['?', '#']).next()).and_then(|u| u.rsplit('/').next())).map_err(err)?;
-    let work = import_media::MediaWork {
-        title: ep.title.clone(),
-        kind: if mime.starts_with("video/") { "video" } else { "audio" },
-        author: Some(feed.title.clone()),
-        source_url: ep.link.clone().or(ep.audio_url.clone()),
-        parts,
-    };
-    store_media_work(&state, &language, work, Some(&hash))
+    .map_err(err)?
+    .map_err(err)
 }
 
 // ---- YouTube (desktop, user-installed yt-dlp) ---------------------------------------------------
@@ -117,18 +92,15 @@ pub async fn ytdlp_status() -> YtdlpStatus {
 
 #[tauri::command]
 pub async fn import_youtube(state: State<'_, AppState>, language: String, url: String) -> Res<Work> {
-    if cfg!(any(target_os = "android", target_os = "ios")) {
-        return Err("YouTube import is only available on desktop".into());
-    }
-    state.lang(&language)?;
-    let lang = language.clone();
-    let work = tauri::async_runtime::spawn_blocking(move || -> Res<_> {
-        let bin = ytdlp::find().ok_or("yt-dlp was not found; install it first")?;
-        ytdlp::import(&bin, url.trim(), &lang).map_err(err)
+    let lang = state.lang(&language)?;
+    let (store, media) = (state.store.clone(), state.media.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = sources::Env { store: &store, media: &media, lang: &lang };
+        sources::import_youtube(&env, &url, &Origin::default())
     })
     .await
-    .map_err(err)??;
-    crate::store_import(&state, &language, work)
+    .map_err(err)?
+    .map_err(err)
 }
 
 #[tauri::command]
