@@ -375,6 +375,41 @@ repo, no paid code signing, downloadable language data, name and app id are fina
 Out of scope: paid signing and notarization, Play Store and F-Droid listings, Android self-update, iOS (M10), delete-term UI
 and other feature requests (they come from the user's testing notes after M7).
 
-### M7 status (in progress)
+### M7 status
 
-Steps 1-5 are built and tested; 6 (publish) waits for the user's repo, 7 (verify on devices) follows it. The full status is written when M7 ends.
+Done: steps 1–7. Public repo `https://github.com/Rowawn/Alstroemeria` (history rewritten to the `Rowawn` no-reply identity before the first push). CI on push
+(Ubuntu tests, Windows check, licence check). `release.yml`: a tag `v<version>` must equal the version in `tauri.conf.json`; a desktop matrix (tauri-action) builds the
+installers and a signed `latest.json` into a draft release; an Android job builds the release-signed APKs; the changelog section is the release body; the user
+publishes the draft. `scripts/bump-version.mjs` keeps `tauri.conf.json`, `Cargo.toml`, `package.json`, `Cargo.lock` and the Android `versionCode`
+(major*10000 + minor*100 + patch) in step. Updater (`tauri-plugin-updater`, minisign-style key, feed `releases/latest/download/latest.json`): desktop updates in place;
+Android shows a banner linking to the release page. Release signing: Android keystore and the updater key live in `~/.alstroemeria/` and in the CI secrets.
+Japanese (`ja-ipadic`) and Korean (`ko-kodic`) dictionaries are no longer embedded: zip packages are published as `langdata-<id>-<version>` releases by
+`langdata.yml`, pinned with size and sha256 in `crates/alst-text/langdata.json`, and are downloaded, imported from a file, or synced between peers over LAN
+(media mime `application/x-alstroemeria-langdata`). Releases `v0.1.0` and `v0.1.1` are published. Changelog in `CHANGELOG.md`.
+`cargo test --workspace`, `npm test` (73) and `npm run test:scripts` (6) pass. One test fix found by CI: term lists ordered by `created_at, id` were not
+deterministic, now `created_at, rowid` (`store.rs`).
+
+Sizes: macOS .app 18.2 MiB (was about 145 with the embedded dictionaries); Android arm64 APK 22.2 MB (arm 18.7, x86_64 23.8, x86 23.4).
+Benchmark over loopback (20k terms, 300 parts, 200 MB media): first sync 4.05 s (about 52 MB/s); a second sync with nothing new 211 ms.
+
+Verified on devices: macOS `.dmg` install and run; the Galaxy (SM-S948U, Android 17) switch from the debug-key build to the release-signed APK (sync to the Mac,
+uninstall, install, re-pair, library returned); the local-network permission prompt now appears by itself; the barcode scanner works under R8; media policy and
+media download; Japanese data downloaded on the Mac and synced to the phone; Korean data synced Mac to phone over LAN; Windows installed (after the unknown-publisher
+warning) with video and audio playing; the updater: 0.1.0 to 0.1.1 worked on macOS and the Android banner appeared and linked to the release.
+
+Known gaps:
+- Video on Android: the Galaxy (Chrome 155 WebView) shows the picture and starts the MP4 (H.264 High L3.1 + AAC), then pauses with MediaError code 3,
+  `PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding` (about 6.7 s in); pressing play again continues, so it recurs. Audio-only files play. The failure is in
+  the audio track of the MP4 (check its codec, profile and channel layout with `ffprobe`); the file's mono or 5.1 AAC or an unusual profile is the first suspect.
+  The 0.1.1 message with the error code made this visible. Next: test a file with stereo AAC-LC, and consider a server-side or import-time remux note.
+- Sync: a large Android to Windows sync failed once, then succeeded on an immediate retry; the first sync across different Wi-Fi networks gave a network error
+  until both devices were on the same network and both apps were restarted (the error text does not say so).
+- Linux is built by CI only, not run. Windows and macOS builds are unsigned (macOS first run needs right-click Open; Windows shows "unknown publisher"). The
+  Windows and Linux updaters were not run.
+- No UI to delete a work or change its language (a wrong-language work was removed with a one-off store call; its orphan media file remains), nor to delete a term.
+- `actionlint` was never run on the workflows. The `langdata.yml` summary step failed once for `ja-ipadic` although the release was published.
+- `rowawn@pm.me` appears in commit `fc60642` (public).
+- The self-test and Japanese `tauri dev` flows need the embed feature or downloaded data.
+- Back up `~/.alstroemeria/` (`updater.key`, `release.jks`, `passwords.env`): losing it breaks updates and Android upgrades.
+
+Next: the user tests and records findings; an overhaul and refinement phase is then planned from them.
