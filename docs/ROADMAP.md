@@ -14,7 +14,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 6 | **LAN sync** ✅ (see status below) | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
 | 7 | **Releases** | Opus design ✅, Sonnet build | Public GitHub releases for Windows/macOS/Linux (unsigned for now) and Android (release-signed APKs/AAB), desktop updater, downloadable Japanese/Korean language data |
 | 8 | **Content packs** | Opus design ✅, Sonnet build | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
-| 9 | **SRS module** | Opus design, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
+| 9 | **SRS module** | Opus design ✅, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
 | 10 | **iOS / iPadOS** | Sonnet | App runs on iPhone/iPad; LAN sync with permissions; tablet layouts |
 | 11 | **Practice tools + native tier** | Opus | Shadowing/phonetics activities; optional Whisper; native extension loading (desktop/Android) |
 
@@ -474,3 +474,32 @@ Known gaps:
 - No UI to delete a pack or its works; the pack view lists only works present on this device.
 
 Not committed (the user approves).
+
+## M9 — SRS module (build plan)
+
+Design: SPEC §11 (read fully), plus §4.3 (events), §6.9.7 (panels, host API), §9.1–9.2 (derived ids, apply) and §16.3 (termKey).
+User decisions are recorded at the top of §11. Steps, each ending with tests passing:
+
+1. **Scheduler:** crate `crates/alst-srs`; migration `0007_srs.sql` (§11.2) with store functions; FSRS-6 (§11.3) with test vectors from
+   `scripts/gen-fsrs-vectors.py` (uses `py-fsrs`, MIT; the generated JSON is checked in, the script is not run in CI); learning and
+   relearning steps, fuzz, day boundary, daily limits per deck tree, bury siblings; the `card` policy.
+2. **History and sync:** `review` / `review.undo` events, replay into the card cache, undo; replay after `apply` brings review
+   events. Add to the sync property tests: two devices review the same cards offline, sync, and both end with identical card state.
+3. **Concepts:** concepts from `termKey`, `terms.concept_id`; the example pool (§11.4) with its scoring tests; the `concept` policy
+   with rotation; card creation in both modes (§11.5); the status link in both modes (§11.7); `exposure` events on part read.
+4. **Templates:** the renderer (§11.8 list), cloze numbering, built-in note types (concept recognition/production, Alstroemeria
+   Sentence). One test per syntax element.
+5. **Anki files:** legacy `.apkg`/`.colpkg` import and export (§11.8). Fixtures made with `genanki` (MIT) by a script; tests for
+   notes, cloze, media, review history, FSRS state from `data`, re-import by `guid`, the `.anki21b`-only refusal, and an
+   export-then-import round trip. Write the code from format documentation only (no Anki/AnkiDroid code).
+6. **Host additions:** `contributes.screens` and `contributes.termActions` (§11.1), `alst.srs.*` with `srs:read`/`srs:write`,
+   `sdk/alstroemeria.d.ts` and `schemas/extension.schema.json` updated; Vitest for the new points and the permission checks.
+7. **`extensions/module-srs`:** review, browse, stats, import/export and settings screens (§11.9); "Add to review" and "Mine
+   sentence" term actions with the mining dialog; automatic creation via the `term.status` listener (own-device events only).
+   Touch and keyboard friendly; works on the phone's screen size.
+8. **Verify:** macOS app and the Galaxy (release-key build from `~/.alstroemeria/`, never the debug key; ask before installing):
+   mine a sentence with audio on the phone and review it on the Mac after sync; rotating sentences across several reviews of one
+   concept; both status-link settings; both card-creation settings; ask the user for a small real `.apkg` from their own Anki (or a
+   shared deck) and import it with its history; export a deck and, if the user has Anki, open it there. Write "M9 status" here.
+
+Out of scope: SPEC §11.10.

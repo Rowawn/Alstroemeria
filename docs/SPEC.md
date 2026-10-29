@@ -129,7 +129,8 @@ Append-only, never updated. It records what happened, so future modules (statist
 | `term.lookup` | `{source: "popup"|"dict", dict_id}` |
 | `part.read` | `{words_read, unknown_count, duration_ms}` |
 | `media.listen` | `{part_id, seconds}` |
-| reserved: `review`, `exposure` | defined by the SRS module (M9) |
+| `review`, `review.undo` | see §11.6 (M9) |
+| `exposure` | `{concept_ids, part_id}` (M9, §11.6) |
 
 Extensions may emit events namespaced by their id (`<ext-id>/<type>`).
 
@@ -401,6 +402,8 @@ Declared in the manifest; shown at install/enable; enforced in Rust on every hos
 | `terms:write` | `alst.terms.update` (status, translation, notes, …) — shown as a warning |
 | `events:read` | `eventListener` for core events and `alst.events.query` |
 | `dict:read` | `alst.dict.lookup` |
+| `srs:read` | `alst.srs` queries: decks, cards, notes, next card, stats (M9, §11) |
+| `srs:write` | `alst.srs` changes: answer, add/edit notes, decks, import/export — shown as a warning (M9) |
 | `net:<host>` | `alst.net.fetch` to that host; `net:*.example.org` covers subdomains; HTTPS only |
 
 Limits: `storage` value ≤ 64 KB, ≤ 1,000 keys per extension; `net.fetch` ≤ 10 MB response,
@@ -946,21 +949,166 @@ fetching and only return short summaries.
 
 ## 11. Anki and the SRS module
 
-**Now (M2):** export terms and sentences to Anki-importable TSV. Desktop: AnkiConnect exporter.
+**Since M2:** terms and sentences export to Anki-importable TSV; desktop has an AnkiConnect exporter.
+Both stay.
 
-**Later (M9) — `module: srs`:**
-- FSRS scheduling via `fsrs-rs`. Cards render HTML/CSS templates in the webview.
-- `.apkg` import and export: notes, note types, templates, media and review history
-  (handle both `collection.anki2` and zstd-compressed `collection.anki21b`).
-  Compatible with Anki's files; no AnkiWeb sync; Anki add-ons not supported.
-- **Concept-linked cards:** cards link to one or more `concepts`. Memory state can be kept per
-  concept, with the cards acting as an example pool. At review time, the scheduler picks an
-  example not seen recently, and the rating updates the concept. Grouping uses
-  `<lang>.lemma`/`concept_id` for words and `*.grammar` for patterns.
-- **Immersion feedback:** `exposure` events from reading and listening can lightly count
-  toward a concept's memory state.
-- The scheduling policy is itself swappable (an extension point within the module), because
-  concept-level scheduling is experimental.
+**M9:** a built-in spaced-repetition system (SRS) that can replace Anki: FSRS scheduling, Anki deck
+import and export, sentence mining from the reader, and concept-linked cards with rotating example
+sentences. User decisions (M9): card creation is a setting (opt-in, the default, or automatic);
+sentence mining is supported; word status and reviews are linked by default with a "reviews update
+status only" option; app-made vocabulary cards default to concept cards with rotating sentences.
+
+### 11.1 Split between core and module
+
+- **Core (`crates/alst-srs`, no Tauri):** data, the FSRS scheduler, scheduling policies, the Anki
+  template renderer, `.apkg` import and export, the example pool. Core, because review history must
+  stay consistent under sync (§11.6) and imports handle large SQLite files.
+- **Host API `alst.srs.*`** exposes it to extensions (permissions `srs:read`, `srs:write`).
+- **`extensions/module-srs` (MIT, first-party module):** all SRS screens and reader buttons, using only
+  the public API, like any third-party module could. It needs two new generic extension points:
+  - `contributes.screens: [{ id, title, icon, entry }]` — a top-level tab that renders a full-size
+    sandboxed iframe (like panels, §6.9.7: `sandbox="allow-scripts"`, no network; may load
+    `alstmedia:` URLs for images and audio).
+  - `contributes.termActions: [{ id, title, command }]` — buttons in the term editor and the word
+    popup. The host calls the extension's command with
+    `{ term, language, sentence: { text, start, end }, partId, workId, cue?: { start, end, mediaHash } }`.
+- Card HTML (Anki templates can contain scripts) renders only inside the module's sandboxed frame.
+
+### 11.2 Data (migration `0007_srs.sql`, all synced unless noted)
+
+```
+deck_configs  id, name, new_per_day(20), reviews_per_day(200), desired_retention(0.9),
+              learning_steps(json ["1m","10m"]), relearning_steps(json ["10m"]), max_interval_days(36500),
+              fsrs_params(json, 21 numbers), bury_siblings(1), day_starts_hour(4)
+decks         id, name ("A::B" nests, as Anki), kind(classic|concept), language, config_id,
+              anki_id, description
+note_types    id, name, kind(standard|cloze), fields(json [name]), templates(json [{name, qfmt, afmt}]),
+              css, anki_id, builtin
+notes         id, note_type_id, deck_id, fields(json [string]), tags(json), guid, anki_id,
+              concept_id, term_id, source(json {workId, partId, start, end, cue?})
+cards         id, note_id, concept_id, deck_id, ord, direction(recognition|production),
+              queue(new|learning|review|relearning), suspended, buried_until, due(ms),
+              stability, difficulty, step, reps, lapses, last_review(ms), anki_id
+note_media    id(derived from name), name, media_hash   -- Anki's flat media namespace
+local_example_pool  concept_id, part_id, start, end, score, last_shown   (local cache)
+```
+
+- A **classic card** belongs to a note; its content is the note's template output.
+- A **concept card** belongs to a concept and a direction (`note_id` empty); its content is generated
+  at review time from the concept and one example (§11.4).
+- Derived ids (§9.1): decks and configs made by the app per language; built-in note types by key;
+  notes imported from Anki by `guid`; classic cards by `(note_id, ord)`; concept cards by
+  `(concept_id, direction)`; concepts by `(language, "lexeme", termKey)`. So the same word or the same
+  Anki note created on two devices is one row.
+- **Concepts come into use:** when a term gets a card, its concept is created or found by the term's
+  `termKey` (lemma, §16.3) and `terms.concept_id` is set. All forms of a word share one concept.
+
+### 11.3 Scheduling
+
+- **FSRS-6**, implemented in `alst-srs` from the published algorithm (formulas and default
+  parameters), not by depending on `fsrs-rs` (which pulls in a machine-learning framework). Test vectors
+  come from the MIT-licensed reference implementation (`py-fsrs`), generated once by a script and checked in.
+  Interval fuzz as the algorithm describes. Learning and relearning steps as in Anki. Ratings: Again, Hard,
+  Good, Easy. A 19-number FSRS-5 parameter set (from an Anki import) is extended to 21 the way FSRS-6
+  defines. Parameter optimisation is out of scope (defaults or imported values).
+- **Day boundary** at `day_starts_hour` local time; daily new and review limits per deck config,
+  counted per deck tree like Anki; "bury siblings" hides other cards of the same note or concept until
+  the next day.
+- **Policies** behind a Rust trait: `card` (FSRS per card; Anki decks and classic decks) and `concept`
+  (FSRS per concept card plus example rotation). A deck's `kind` picks the policy. A `schedulerPolicy`
+  extension point is reserved, not implemented.
+
+### 11.4 Concept cards and the example pool
+
+- Each concept card shows one sentence. Built-in templates: **recognition** (sentence with the word
+  highlighted → meaning, reading, the full sentence and its source) and **production** (meaning plus
+  the sentence with the word blanked → word). Production is off by default per deck.
+- **Pool:** mined sentences for the concept first (§11.5), then sentences from the user's library that
+  contain any term of the concept: 4–30 words, scored higher when the rest of the sentence is mostly
+  known words (comprehensible), at most 3 per work, up to 20 kept in `local_example_pool` and refreshed in
+  the background when parts are imported or read.
+- **Rotation:** each review takes the pooled sentence that was shown least recently (`last_shown`,
+  and also `example` in the review events, so it holds across devices). With no sentence available, the
+  card shows the word alone.
+- The back has "Open in reader" (jumps to that part and sentence) and plays the sentence's audio when the
+  part has cue timing (§8.2) for it.
+
+### 11.5 Making cards
+
+- **Setting `srs.cardCreation`:** `opt-in` (default) or `automatic`.
+  - Opt-in: the "Add to review" term action, and "Add all learning words" in the SRS screen (with a
+    preview count).
+  - Automatic: when a term on this device moves to status 1–5 and has no card, the module creates
+    its concept card(s). The new cards per day limit still applies at review time.
+- **Sentence mining:** the "Mine sentence" term action captures the word and its whole sentence (with
+  the cue's audio clip reference when the part is timed) into an editable dialog (target word,
+  sentence, meaning, optional sentence translation, tags, deck). Saving creates a note of the built-in
+  type **Alstroemeria Sentence** (fields: Sentence, Target, Meaning, SentenceMeaning, Audio, Source)
+  linked to the term's concept.
+  - In a concept deck the mined sentence joins the concept's pool and is preferred.
+  - In a classic deck it is a normal card with that fixed sentence.
+- Side effects run only for events from this device (`events.site_id`), so sync never makes a second
+  device repeat them; derived ids make any repeat harmless anyway.
+
+### 11.6 Reviews, history and sync
+
+- Each answer appends an event `review` (§4.3) with payload
+  `{card_id, rating, duration_ms, example?: {part_id, start}, policy, before: {queue, s, d, due}}`.
+  The card's scheduling columns are a cache of replaying its review events in `(hlc, site_id)` order.
+- After a sync brings review events for a card, the store replays that card's history and rewrites its
+  columns. Two devices that review the same card offline both keep their reviews and end up with the
+  same state. A property test covers this.
+- Undo (last answer only) appends an `review.undo` event naming the review; replay skips undone reviews.
+- Reading emits `exposure` events `{concept_ids, part_id}` when a part is marked read, for later use.
+  They do not affect scheduling in M9.
+
+### 11.7 Status link
+
+Setting `srs.statusLink`: `linked` (default) or `reviews-only`.
+
+- **Both modes:** after a review, the term's status follows the concept's stability:
+  under 1 day → 1, under 3 → 2, under 7 → 3, under 21 → 4, otherwise 5. Reviews never set 98 or 99.
+- **`linked` only:** marking a word Well-known (99) or Ignored (98) suspends its cards; moving it back to
+  1–5 unsuspends them. In `reviews-only`, manual status changes never touch cards.
+
+### 11.8 Anki files
+
+- **Import `.apkg` / `.colpkg`** with the legacy layout: `collection.anki21` or `collection.anki2`
+  (SQLite with notes, cards, revlog, and JSON note types, decks and deck options in `col`) plus the
+  JSON `media` map and numbered media files.
+  - Media go to the media store and `note_media`.
+  - Review history becomes `review` events.
+  - FSRS memory state is taken from the card's `data` field when present, otherwise computed by
+    replaying the history.
+  - Re-importing updates notes with the same `guid` and keeps their review history.
+  - Decks keep Anki's tree and use the `card` policy.
+- A package that contains only `collection.anki21b` (the newer layout with protobuf-encoded settings) is
+  refused with: "Export again from Anki with 'Support older Anki versions' ticked." **Licence rule
+  (§14):** Anki is AGPL. Write the importer from the file format's public documentation and from inspecting
+  exported files. Never copy Anki or AnkiDroid code or `.proto` files. Test fixtures are made with `genanki`
+  (MIT) or by our own exporter.
+- **Export `.apkg`** in the legacy layout (`collection.anki21`), readable by current Anki: decks, note
+  types, notes, cards with their schedule, revlog and media. Concept decks export as classic notes, one per
+  concept and direction, with the current pool's best sentence in the fields. This is lossy and the
+  dialog says so.
+- **Template language** (renderer in `alst-srs::template`): `{{Field}}`, `{{#F}}…{{/F}}`, `{{^F}}…{{/F}}`,
+  `{{FrontSide}}`, `{{Tags}}`, `{{Deck}}`, `{{cloze:F}}` (with numbered cloze cards), `{{text:F}}`,
+  `{{hint:F}}`, `{{furigana:F}}`/`{{kana:F}}`/`{{kanji:F}}`, `[sound:file]` (play button). Unknown
+  filters pass the field through and log once. No AnkiWeb sync, no Anki add-ons.
+
+### 11.9 Screens (module-srs)
+
+- **Review:** deck list with due counts → review (show answer, 1–4 or Space, undo, edit note, suspend,
+  "Open in reader"), keyboard and touch friendly.
+- **Browse:** search notes and cards by text, deck, tag, state; edit fields; suspend, delete, move.
+- **Stats:** due forecast (30 days), reviews per day, true retention, cards by state.
+- **Import / export** of `.apkg`.
+- **Settings:** card creation, status link, default deck kind, production cards on or off, deck options.
+
+### 11.10 Out of scope for M9
+
+FSRS parameter optimisation, the `.anki21b` layout, AnkiWeb or AnkiConnect sync, image occlusion,
+`{{type:}}` answer typing, Anki add-ons, scheduling credit from exposure, third-party scheduler policies.
 
 ## 12. Repository layout
 
@@ -977,7 +1125,8 @@ fetching and only return short summaries.
 │  ├─ alst-ext/              manifest parsing, registry, capability graph
 │  ├─ alst-dict/             (M2) Yomitan import + lookup
 │  ├─ alst-sync/             (M6)
-│  └─ alst-pack/             (M8)
+│  ├─ alst-pack/             (M8)
+│  └─ alst-srs/              (M9)
 ├─ src-tauri/                thin Tauri shell (commands → crates)
 ├─ ui/                       Svelte app + extension worker host
 └─ extensions/               first-party: lang-es, lang-ja, lang-ko, addon-*, module-*
