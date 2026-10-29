@@ -13,7 +13,7 @@ Each milestone ends with something usable and is sized for one or a few focused 
 | 5 | **CJK languages** | Opus design ✅, Sonnet build | `lang.ja` (Lindera, furigana, pitch, Yomitan-style lookup), `lang.ko` (+ hanja add-on, grammar colors) |
 | 6 | **LAN sync** ✅ (see status below) | Opus design ✅, Sonnet build | Pairing by code and QR, convergence property tests pass, media sync policy, dictionaries and extensions follow |
 | 7 | **Releases** | Opus design ✅, Sonnet build | Public GitHub releases for Windows/macOS/Linux (unsigned for now) and Android (release-signed APKs/AAB), desktop updater, downloadable Japanese/Korean language data |
-| 8 | **Content packs** | Sonnet | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
+| 8 | **Content packs** | Opus design ✅, Sonnet build | `.alpack` import with review screen; `build-pack` Claude skill + fetch/extract scripts |
 | 9 | **SRS module** | Opus design, Sonnet build | FSRS, `.apkg` import/export, concept-linked cards with rotating examples |
 | 10 | **iOS / iPadOS** | Sonnet | App runs on iPhone/iPad; LAN sync with permissions; tablet layouts |
 | 11 | **Practice tools + native tier** | Opus | Shadowing/phonetics activities; optional Whisper; native extension loading (desktop/Android) |
@@ -413,3 +413,32 @@ Known gaps:
 - Back up `~/.alstroemeria/` (`updater.key`, `release.jks`, `passwords.env`): losing it breaks updates and Android upgrades.
 
 Next: the user tests and records findings; an overhaul and refinement phase is then planned from them.
+
+## M8 — Content packs (build plan)
+
+Design: SPEC §10 (read fully), plus §8 and §6.9.10 for the existing importers and §9.1 for derived ids. Steps, each ending with
+tests passing:
+
+1. **Format:** `schemas/pack.schema.json`; new crate `crates/alst-pack` that reads and validates a pack (zip safety, limits,
+   licence allowlist, URL schemes), with tests on hand-made fixture packs in `crates/alst-pack/tests/fixtures/` (valid, too
+   large, path traversal, unknown `formatVersion`, bad URL, embedded content with a non-allowlisted licence).
+2. **One import path:** move the podcast-episode, YouTube and media-file orchestration from `src-tauri/src/media.rs` into crate
+   code (`alst-pack` or `alst-text::import`, whichever keeps dependencies simple), keep the existing UI commands working on top
+   of it, and add `direct` (by file type) and `embedded` (from the zip, Markdown to plain text). Existing import tests keep passing.
+3. **Store:** migration `0006_packs.sql` (`packs`, `works.pack_item`); store functions for packs, "already imported" lookup by
+   `(pack_id, pack_item)`, seed vocab (create missing terms at status 0, fill only empty fields, never change status). Tests,
+   including a re-import that adds only new items, and a sync test showing two devices that import the same pack converge.
+4. **Plan and run:** `open` returns the plan of §10.3; `run` imports the chosen items in the background with progress events,
+   cancel and per-item errors. Tests with a local HTTP fixture server (an article page, a small RSS feed with a transcript,
+   an SRT file).
+5. **UI:** "Import pack…" in the Library, drag-and-drop, review screen, progress and "Retry", pack filter and pack view
+   with attributions, attribution line at the end of a work. Desktop `.alpack` file association. `npm test` covers the
+   review-screen state.
+6. **Skill:** `.claude/skills/build-pack/SKILL.md`, `scripts/pack/` (`probe` as an `alst-pack` example, `rss`, `yt`, `build`),
+   `packs/` gitignored. Then make one real pack with the skill (Spanish, automotive, B1, small counts to save credits) and
+   record how many tool calls and roughly how many tokens it took.
+7. **Verify:** import that pack on the macOS app and on the Galaxy (release build; the user's phone): review screen, a
+   `youtube-subs` item showing "Import on a desktop" on Android and arriving there by sync after the Mac imports it, seed
+   vocab in the reader popup, re-import skipping existing items. Write "M8 status" here.
+
+Out of scope: see SPEC §10.5.

@@ -86,8 +86,10 @@ Rules:
 
 ```
 works          id, language, title, kind(text|epub|article|audio|video|lyrics|subtitle),
-               author, source_url, source_license, pack_id, tags(json), archived,
+               author, source_url, source_license, pack_id, pack_item (M8), tags(json), archived,
                settings(json)
+packs          id, title, language, topic, level, description, created_by, version_at,
+               manifest(json)                       -- imported content packs (§10, M8)
 parts          id, work_id, idx, title, text, media_hash, timing(json: cue list, see §8), word_count
                -- a chapter, page, episode, or song; reader opens one part at a time
 concepts       id, language, kind(lexeme|grammar|phrase), key, meta(json)
@@ -793,47 +795,135 @@ different users, per-table sync choices, background sync on Android, iOS (M10).
 
 ## 10. Content packs (`.alpack`, M8)
 
-A zip with `manifest.json` and an optional `items/` folder.
+A content pack is a curated, topic-based reading/listening list for one language ("Spanish:
+automotive vocabulary, B1"). Packs are made by people or by Claude with the `build-pack` skill
+(§10.6), shared as files, and imported with a review screen. A pack mostly **references** sources;
+the app fetches them with its own importers, so packs stay small and don't redistribute
+copyrighted text.
+
+### 10.1 File format
+
+`.alpack` = a zip with `manifest.json` at the root and an optional `items/` folder. Schema:
+`schemas/pack.schema.json` (JSON Schema 2020-12; the app and the skill validate against it).
 
 ```json
 {
   "format": "alstroemeria-pack",
   "formatVersion": 1,
-  "id": "uuid",
+  "id": "0193…-uuid",
   "title": "Spanish: automotive vocabulary",
   "language": "es",
   "topic": "automotive",
   "level": "B1",
   "description": "…",
-  "createdBy": "human | agent:<name>",
-  "createdAt": "2026-10-22T00:00:00Z",
+  "createdBy": "human | agent:claude",
+  "createdAt": "2026-10-28T00:00:00Z",
   "items": [
-    {
-      "id": "a1",
-      "kind": "article | podcast | video | book | lyrics | text",
-      "title": "…",
-      "source": { "url": "…", "license": "CC-BY-4.0 | unknown | …", "attribution": "…" },
-      "content": { "mode": "fetch", "strategy": "readability | rss-episode | youtube-subs | direct" },
-      "tags": ["engine", "maintenance"]
-    },
-    {
-      "id": "a2", "kind": "text", "title": "…",
-      "source": { "url": "…", "license": "CC-BY-SA-4.0", "attribution": "…" },
-      "content": { "mode": "embedded", "path": "items/a2.md" }
-    }
+    { "id": "a1", "kind": "article", "title": "…", "tags": ["engine"],
+      "source": { "url": "https://…", "license": "unknown", "attribution": "El País" },
+      "content": { "mode": "fetch", "strategy": "article" },
+      "estimate": { "words": 900 } },
+    { "id": "p1", "kind": "podcast", "title": "…",
+      "source": { "url": "https://feed.example/rss", "license": "unknown", "attribution": "…" },
+      "content": { "mode": "fetch", "strategy": "rss-episode", "guid": "…" },
+      "estimate": { "minutes": 24, "transcript": true } },
+    { "id": "t1", "kind": "text", "title": "…",
+      "source": { "url": "https://…", "license": "CC-BY-SA-4.0", "attribution": "Wikipedia contributors" },
+      "content": { "mode": "embedded", "path": "items/t1.md" } }
   ],
-  "vocab": [ { "text": "bujía", "translation": "spark plug", "notes": "" } ]
+  "vocab": [ { "text": "bujía", "translation": "spark plug", "reading": "", "notes": "" } ]
 }
 ```
 
-- **`fetch` mode (default):** the pack only references the source. The app fetches and extracts it
-  on import. This keeps packs small and avoids redistributing copyrighted text.
-- **`embedded` mode:** only for openly licensed or user-owned content.
-- On import, the app shows the item list with sources and licenses, then creates works with
-  `pack_id` set. Seed vocabulary becomes terms with status 0 and the translations filled in.
-- **Agent workflow:** a Claude Code skill (`.claude/skills/build-pack/`). Claude chooses sources
-  and writes metadata. Local scripts handle fetching, extraction and transcripts, so the model
-  never reads whole pages. Items per kind are capped.
+- `id`: a UUID chosen when the pack is created; a new version of the same pack keeps it.
+  `items[].id` is unique within the pack and stable across versions.
+- `kind`: `article | podcast | video | book | text | subtitle | lyrics` (the work kinds of §4.2).
+- `estimate` is optional and only informs the review screen.
+- Unknown fields are ignored; an unknown `formatVersion` major is refused.
+
+### 10.2 Content modes and strategies
+
+| mode / strategy | input fields | importer it uses | platforms |
+|---|---|---|---|
+| `fetch` / `article` | `source.url` | readability extraction (§8) | all |
+| `fetch` / `rss-episode` | `source.url` = feed, `guid` | podcast importer: audio + transcript | all |
+| `fetch` / `youtube-subs` | `source.url` | yt-dlp subtitles (§8) | desktop with yt-dlp |
+| `fetch` / `direct` | `source.url`, optional `transcriptUrl` | by file type: `.epub`, `.txt`/`.md`, `.srt`/`.vtt`/`.lrc`, audio/video (+ transcript) | all |
+| `embedded` | `path` (inside `items/`), optional `mediaPath`, optional `timingPath` | same file-type importers, from the zip | all |
+
+- **Embedded content** is only for openly licensed or user-owned material: `source.license` must be
+  an SPDX id from an allowlist (CC0-1.0, CC-BY-4.0, CC-BY-SA-4.0, PD (public domain), or `own`). The
+  import review shows other values with a warning and leaves the item unchecked.
+- An item the current device can't import (e.g. `youtube-subs` on Android, or yt-dlp missing) is shown
+  as "Import on a desktop; it will sync here" (§9) and stays unchecked.
+- Markdown in embedded text is imported as plain text: headings and paragraphs become paragraphs,
+  everything else (links, images, HTML) is dropped.
+
+### 10.3 Import (`crates/alst-pack`)
+
+New crate `alst-pack` (no Tauri) owns: reading and validating a pack (zip safety as for `.alext`,
+§6.9.2: no absolute paths, `..`, symlinks; zip ≤ 200 MB; manifest ≤ 1 MB; ≤ 200 items; ≤ 2,000 vocab
+entries; URLs must be `http`/`https`), planning, and running the import. The fetch-and-store
+orchestration that M4 left in `src-tauri/src/media.rs` (podcast episode, YouTube, media file) moves
+into crate code that both the existing import commands and the pack importer call, so there is one
+path per source type.
+
+1. **Open:** parse and validate; return a plan: pack metadata, each item with what will happen
+   (`ready`, `needs-desktop`, `already-imported`, `license-warning`), and vocab counts (new / would fill an
+   empty translation / already has a translation).
+2. **Review screen** (UI): pack title, description, language, level, `createdBy`; item list with kind,
+   title, source domain, licence, estimate and a checkbox; "Add seed vocabulary" toggle. Nothing is
+   fetched before the user confirms.
+3. **Run:** items import one at a time in the background with per-item progress, cancel, and a final list
+   of failures with "Retry". A failed item does not stop the rest.
+4. **Store:** works are written through `alst-core::store` with `pack_id` = pack id and
+   `pack_item` = item id (new column). Re-importing a pack skips items that already have a work with that
+   `(pack_id, pack_item)` (including on other devices, after sync), so a new pack version adds only its
+   new items.
+5. **Seed vocab:** for each entry, a term with status 0 is created if missing (derived id, §9.1);
+   an existing term only gets `translation`/`reading`/`notes` filled where they are empty. Never
+   changes a status. Multi-word entries get `word_count` from the language's tokenizer.
+
+Migration `0006_packs.sql`: synced table `packs (id, created_at, deleted, title, language, topic, level,
+description, created_by, version_at, manifest json)` and `works.pack_item TEXT`. The library can filter
+by pack and shows a pack's description and attributions.
+
+Packs open from the Library ("Import pack…", file picker), from a dropped file, and on desktop as the
+`.alpack` file association.
+
+### 10.4 Attribution
+
+Each work keeps `source_url`, `source_license` and the attribution (in `works.settings.attribution`).
+The reader shows it at the end of the last part, and the pack view lists all attributions.
+
+### 10.5 Out of scope for M8
+
+Exporting a library as a pack, a pack catalogue or store, sharing a pack over LAN sync (its works sync
+anyway), packs for SRS cards (M9), and third-party importer extensions (§6.9.10 stays reserved).
+
+### 10.6 The `build-pack` skill (Claude Code)
+
+`.claude/skills/build-pack/SKILL.md` plus scripts in `scripts/pack/`. Goal: a good pack with little model
+reading, because credits are shared. The model chooses sources and writes metadata; scripts do the
+fetching and only return short summaries.
+
+- **Input:** language, topic, level, optional item counts per kind (defaults: 8 articles, 4 podcast
+  episodes, 3 videos, 0–2 texts; hard cap 25 items) and an optional seed-vocab size (default 40).
+- **Tools for the model:** web search to find candidates; then scripts:
+  - `probe` — runs the app's own article extractor (`cargo run -p alst-pack --example probe -- <url>`)
+    and prints JSON `{title, words, excerpt (first 300 chars), ok, error}`. Only this summary reaches the model.
+  - `rss` — lists a feed's latest episodes as `{guid, title, minutes, hasTranscript}` (cap 20).
+  - `yt` — checks that a video has subtitles in the language (`yt-dlp --list-subs`), prints
+    `{title, minutes, subs: manual|auto|none}`.
+  - `build` — writes the manifest from a small YAML/JSON draft, validates it against the schema, zips the
+    `.alpack`, and prints the item count and size.
+- **Rules in the skill:** prefer sources with real text for the level; podcasts only with transcripts,
+  videos only with manual subtitles (auto only if nothing else); never embed copyrighted text (fetch mode);
+  embedded only with an allowlisted licence; no lyrics unless openly licensed; check every URL with a
+  script before including it; stop at the caps. Seed vocab comes from topic knowledge plus the probes'
+  excerpts, not from reading full pages.
+- **Output:** `packs/<language>-<topic-slug>.alpack` (the `packs/` folder is gitignored) and a short summary
+  table of items.
 
 ## 11. Anki and the SRS module
 
