@@ -144,7 +144,7 @@
 {#if commands.length}
   <div class="row links">
     {#each commands as c (c.ext.id + c.id)}
-      <button onclick={() => onCommand(c)} title={c.ext.name}>{c.title}</button>
+      <button onclick={async () => { await save(); onCommand(c); }} title={c.ext.name}>{c.title}</button>
     {/each}
   </div>
 {/if}

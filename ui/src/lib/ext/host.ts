@@ -8,6 +8,16 @@ import type { CoreEvent, ExtInfo, LookupInput, LookupSection, ResolvedView, Toke
 
 export const TIMEOUTS = { activate: 5000, annotate: 2000, decorate: 2000, lookup: 2000, command: 30000, event: 5000, panel: 10000 } as const;
 
+/** What a term action's command receives. */
+export type TermActionArgs = {
+  term: string;
+  language: string;
+  sentence: { text: string; start: number; end: number };
+  partId: string;
+  workId: string;
+  cue?: { start: number; end: number; mediaHash: string };
+};
+
 export type ExtStatus = "idle" | "starting" | "ready" | "errored";
 export type ExtError = { message: string; at: number };
 
@@ -29,6 +39,12 @@ export type UiBridge = {
   openTerm(language: string, text: string): void;
   copyText(text: string): Promise<void> | void;
   readerCurrent(): { workId: string; partId: string; language: string } | null;
+  /** Show one of the extension's screens on top of whatever is open, with a payload for it (SPEC §11.1). */
+  openScreen(extId: string, screenId: string, payload: unknown): void;
+  /** Open a part in the reader ("Open in reader" on a review card). */
+  openPart(partId: string, start: number): void;
+  /** Ask the user for a file and upload it to the staging area; resolves with the upload id (null if cancelled). */
+  pickFile(extId: string, accept: string): Promise<{ uploadId: string; name: string } | null>;
 };
 
 type Running = { info: ExtInfo; worker: Port & { terminate(): void }; rpc: RpcChannel; ready: Promise<void> };
@@ -217,6 +233,13 @@ export class ExtensionHost {
     return res?.value ?? null;
   }
 
+  /** Run a `contributes.termActions` entry: the host calls the action's command with the term and its sentence (SPEC §11.1). */
+  async runTermAction(info: ExtInfo, language: string, actionId: string, args: TermActionArgs): Promise<unknown> {
+    const action = info.contributes.termActions?.find((a) => a.id === actionId);
+    if (!action) throw new RpcFailure("no_such_action", `no term action '${actionId}'`);
+    return this.runCommand(info, language, action.command, args);
+  }
+
   async panelMessage(info: ExtInfo, language: string, panelId: string, msg: unknown): Promise<unknown> {
     const res = await this.callHook(info, language, "panelMessage", { language, panelId, msg }, TIMEOUTS.panel);
     return res?.value ?? null;
@@ -245,6 +268,17 @@ export class ExtensionHost {
         ui.openPanel(info.id, id);
         return null;
       }
+      case "ui.openScreen": {
+        const id = String(p.screenId ?? "");
+        if (!info.contributes.screens?.some((x) => x.id === id)) throw new RpcFailure("no_such_screen", `no screen '${id}'`);
+        ui.openScreen(info.id, id, p.payload ?? null);
+        return null;
+      }
+      case "ui.openPart":
+        ui.openPart(String(p.partId ?? ""), Number(p.start ?? 0) || 0);
+        return null;
+      case "ui.pickFile":
+        return ui.pickFile(info.id, String(p.accept ?? "").slice(0, 100));
       case "ui.openTerm":
         ui.openTerm(String(p.language ?? ""), String(p.text ?? ""));
         return null;

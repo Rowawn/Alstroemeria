@@ -1,0 +1,24 @@
+{
+  "id": "module.srs",
+  "name": "Spaced repetition",
+  "version": "1.0.0",
+  "kind": "module",
+  "license": "MIT",
+  "description": "Review cards with FSRS, mine sentences from the reader, keep word statuses in step with your reviews, and import or export Anki decks.",
+  "author": "Alstroemeria contributors",
+  "apiVersion": "^1.0",
+  "targets": ["*"],
+  "permissions": ["srs:write", "terms:read", "events:read"],
+  "runtime": { "type": "js", "entry": "main.js" },
+  "contributes": {
+    "screens": [{ "id": "review", "title": "Review", "icon": "cards", "entry": "screen.html" }],
+    "commands": [
+      { "id": "add-to-review", "title": "Add to review" },
+      { "id": "mine-sentence", "title": "Mine sentence" }
+    ],
+    "termActions": [
+      { "id": "add", "title": "Add to review", "command": "add-to-review" },
+      { "id": "mine", "title": "Mine sentence", "command": "mine-sentence" }
+    ]
+  }
+}

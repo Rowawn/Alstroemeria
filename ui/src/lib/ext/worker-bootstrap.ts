@@ -56,7 +56,12 @@ const alst = {
     openPanel: (panelId: string) => call("ui.openPanel", { panelId }),
     openTerm: (language: string, text: string) => call("ui.openTerm", { language, text }),
     copyText: (text: string) => call("ui.copyText", { text }),
+    openScreen: (screenId: string, payload?: unknown) => call("ui.openScreen", { screenId, payload }),
+    pickFile: (accept?: string) => call("ui.pickFile", { accept }),
+    openPart: (partId: string, start?: number) => call("ui.openPart", { partId, start }),
   },
+  // `alst.srs.<method>(params)` calls the host's `srs.<method>` (SPEC §11.1); the host checks srs:read / srs:write.
+  srs: new Proxy({}, { get: (_t, name) => (params?: unknown) => call(`srs.${String(name)}`, params ?? {}) }),
   reader: { current: () => call("reader.current") },
 };
 scope.alst = alst;

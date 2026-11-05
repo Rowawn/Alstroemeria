@@ -60,6 +60,8 @@ export type Contributes = {
   panels: { id: string; title: string; entry: string; placement: string }[];
   commands: { id: string; title: string; context?: "reader" | "term" | "global" }[];
   lookupProviders: { id: string; title: string }[];
+  screens: { id: string; title: string; icon?: string; entry: string }[];
+  termActions: { id: string; title: string; command: string }[];
   settings?: { properties?: Record<string, SettingSchema> } | null;
 };
 
@@ -124,6 +126,8 @@ export type CoreEvent = {
   subjectType: string | null;
   subjectId: string | null;
   payload: unknown;
+  /** Written on this device, not received by sync. */
+  own?: boolean;
 };
 
 export type RpcError = { code: string; message: string };

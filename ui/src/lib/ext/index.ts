@@ -2,6 +2,7 @@
 
 import { api } from "../api";
 import { toast } from "../notify.svelte";
+import { openPart, openScreen, pickFile } from "./screens.svelte";
 import { ExtensionHost, type UiBridge } from "./host";
 // Inlined and started from a blob: URL on purpose. A worker started from a same-origin script URL takes its CSP from
 // that script's HTTP response (which has none for app assets), so it could reach the network. A blob worker inherits
@@ -47,6 +48,9 @@ const ui: UiBridge = {
   openTerm: (language, text) => readerBridge.openTerm(language, text),
   copyText,
   readerCurrent: () => readerBridge.current,
+  openScreen,
+  openPart,
+  pickFile,
 };
 
 export const extHost = new ExtensionHost({

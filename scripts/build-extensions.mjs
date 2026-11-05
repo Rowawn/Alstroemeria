@@ -1,7 +1,7 @@
 // Builds first-party extensions that need it and vendors SDK files into their folders (SPEC §6.9.8).
 //   * extensions/*/Cargo.toml  → cargo build --target wasm32-unknown-unknown --release → ext.wasm
 //   * runtime "wasm"           → sdk/wasm-shim.js copied in
-//   * contributes.panels       → sdk/panel.js copied in
+//   * contributes.panels/screens → sdk/panel.js copied in
 // The copies and .wasm files are git-ignored; run before `tauri dev/build` (the `tauri` npm script does).
 
 import { spawnSync } from "node:child_process";
@@ -31,5 +31,5 @@ for (const name of readdirSync(extRoot)) {
     copyFileSync(out, join(dir, "ext.wasm"));
   }
   if (manifest.runtime?.type === "wasm") copyFileSync(join(sdk, "wasm-shim.js"), join(dir, "wasm-shim.js"));
-  if (manifest.contributes?.panels?.length) copyFileSync(join(sdk, "panel.js"), join(dir, "panel.js"));
+  if (manifest.contributes?.panels?.length || manifest.contributes?.screens?.length) copyFileSync(join(sdk, "panel.js"), join(dir, "panel.js"));
 }

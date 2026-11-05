@@ -98,8 +98,10 @@ version = "0.1.0"
 dependencies = [
  "alst-core",
  "alst-dict",
+ "alst-srs",
  "alst-text",
  "include_dir",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",
@@ -121,10 +123,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "alst-srs"
+version = "0.1.0"
+dependencies = [
+ "alst-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "alst-sync"
 version = "0.1.0"
 dependencies = [
  "alst-core",
+ "alst-srs",
  "if-addrs",
  "mdns-sd",
  "proptest",
@@ -162,6 +177,7 @@ dependencies = [
  "alst-dict",
  "alst-ext",
  "alst-pack",
+ "alst-srs",
  "alst-sync",
  "alst-text",
  "percent-encoding",

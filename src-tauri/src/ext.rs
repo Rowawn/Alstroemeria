@@ -162,7 +162,10 @@ pub async fn ext_call(app: tauri::AppHandle, state: State<'_, AppState>, ext_id:
     let reg = state.registry()?;
     let languages = state.languages.read().map_err(err)?;
     let mut store = state.store()?;
-    let result = host::call(&mut host::HostCtx { registry: &reg, store: &mut store, languages: &languages }, &ext_id, &method, &params)
+    let scratch = state.data_dir.join("tmp");
+    let export_dir = app.path().download_dir().unwrap_or_else(|_| state.data_dir.join("exports"));
+    let srs = alst_ext::srs_api::SrsEnv { media: &state.media, scratch: &scratch, export_dir: &export_dir };
+    let result = host::call(&mut host::HostCtx { registry: &reg, store: &mut store, languages: &languages, srs: Some(srs) }, &ext_id, &method, &params)
         .map_err(err);
     state.forward_events(&app, &store);
     result
@@ -172,8 +175,8 @@ pub async fn ext_call(app: tauri::AppHandle, state: State<'_, AppState>, ext_id:
 
 /// CSP for extension documents (panels). They can't reach the network, the app, or each other.
 const PANEL_CSP: &str = "default-src 'none'; script-src 'unsafe-inline' alstext: http://alstext.localhost; \
-style-src 'unsafe-inline' alstext: http://alstext.localhost; img-src data: alstext: http://alstext.localhost; \
-connect-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+style-src 'unsafe-inline' alstext: http://alstext.localhost; img-src data: alstext: http://alstext.localhost alstmedia: http://alstmedia.localhost; \
+media-src alstmedia: http://alstmedia.localhost; connect-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
 fn respond(status: StatusCode, mime: &str, body: Vec<u8>, html: bool) -> Response<Vec<u8>> {
     let mut b = Response::builder()

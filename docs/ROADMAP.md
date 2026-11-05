@@ -503,3 +503,41 @@ User decisions are recorded at the top of §11. Steps, each ending with tests pa
    shared deck) and import it with its history; export a deck and, if the user has Anki, open it there. Write "M9 status" here.
 
 Out of scope: SPEC §11.10.
+
+### M9 status
+
+Done: steps 1–7. New crate `crates/alst-srs` (FSRS-6 in `fsrs`, deck options, day boundary, policies and the due queue in `sched`, review events and
+replay in `replay`, concepts, card creation and the status link in `concept`, the example pool and rotation in `pool`, the Anki template renderer in
+`template`, card rendering in `render`, `.apkg` import and export in `anki`); migration `0007_srs.sql` (`deck_configs, decks, note_types, notes, cards,
+note_media, local_example_pool`); `alst-core::srs` (writes with change capture, the card cache write, event batches, `ensure_concept`) and a replay hook
+that `apply` runs; `alst.srs.*` (`crates/alst-ext/src/srs_api.rs`), the `srs:read`/`srs:write` permissions, `contributes.screens` and
+`contributes.termActions`, `alst.ui.openScreen/pickFile/openPart`, an `own` flag on forwarded events; `extensions/module-srs` (screen with decks and review,
+browse, stats, import/export, settings; term actions; the status listener). SPEC §11.11 records the choices. `sdk/alstroemeria.d.ts`,
+`sdk/panel.js` and `schemas/extension.schema.json` are updated.
+`cargo test --workspace`, `npm test` (86) and `npm run check` pass. New tests: FSRS against 80 sequences (1,000+ answers) from `py-fsrs 6.3.2`
+(`scripts/gen-fsrs-vectors.py`; the PyPI package is `fsrs`), fuzz, steps, FSRS-5→6 parameters; queue limits per deck tree, day boundary, sibling burying,
+suspension; undo and replay; sync property tests with devices that review the same cards offline (`crates/alst-sync/tests/srs_convergence.rs`: random
+reviews, undos and suspends on 2–3 devices with cut-off sessions; they fail when the replay hook is removed); the pool (limits, scoring, UTF-16 offsets,
+rotation across reviews and across devices, mined sentences first); card creation in both modes, status link in both modes, exposure events; one test per
+template syntax element; `.apkg` import of genanki fixtures (`scripts/gen-anki-fixtures.py`: basic with media and a reverse card, cloze, review history and
+FSRS `data`, `.anki21b`-only), re-import by guid, export then import round trip, concept deck export; host permission checks, manifest validation, module
+behaviour (Vitest). The module's screen was also driven in a browser against a fake host (decks, review with Show answer, rating, undo, browse, stats,
+settings, mining dialog).
+
+Step 8 (macOS app and Galaxy, release key): installed and used by the user. Fixed after that use: the term editor saves its pending edits before a
+term action (the chosen definition was lost); "Mine sentence" saves in one tap with a toast (the worker called a missing `alst.call`; the mining dialog is
+gone); mined sentences are stripped of markup in the pool; Space and 1-4 work from the first card and the sound autoplays; toasts sit below the status
+bar; play and "Open in reader" are full-width buttons at the bottom of the card; decks have Suspend and Delete (`srs.suspendDeck`, `srs.deleteDeck`) and
+Browse has Select all (the sandboxed screens cannot use `confirm()`, so confirmations are in the page). An `.apkg` import from the user's own Anki ran on
+the Mac.
+
+Known gaps:
+- No exported file has been opened in real Anki. Deleting a deck of 200 cards takes a few seconds (one write per card). The lag when opening the term
+  editor in the reader, and the Android audio error when starting from a later part of a long file (media playback, not SRS), were not looked at.
+- "Open in reader" opens the part, not the sentence. Concept cards cannot be edited or previewed in Browse (the word is edited in the term editor).
+- Review history exported to Anki has no intervals; FSRS parameters are defaults or imported, never optimised.
+- The card's HTML runs in a nested sandboxed frame; Anki templates that need other Anki features (`{{type:}}`, image occlusion) show their fields as plain text.
+- Cards in filtered decks are imported into their original deck; filtered decks are skipped. Anki's "buried" state is dropped.
+
+Not committed (the user approves).
+

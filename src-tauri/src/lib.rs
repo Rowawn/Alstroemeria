@@ -389,6 +389,8 @@ fn finish_part(app: tauri::AppHandle, state: State<AppState>, part_id: String, m
         "duration_ms": duration_ms.max(0),
     });
     store.emit_event("part.read", Some(&work.language), Some(("part", &part_id)), &payload).map_err(err)?;
+    // Which known concepts the part exposed the reader to (SPEC §11.6); no effect on scheduling.
+    alst_srs::concept::emit_exposure(&mut store, &part_id, &alst_ext::srs_api::LangSeg(Some(&lang))).map_err(err)?;
     let created = if mark_known { store.create_terms(&work.language, &unknown, 99).map_err(err)? } else { 0 };
     state.forward_events(&app, &store);
     Ok(created)
@@ -582,7 +584,8 @@ pub fn run() {
             };
             let db_path = dir.join("alstroemeria.db");
             let ext_root = dir.join("extensions");
-            let store = Store::open(&db_path)?;
+            let mut store = Store::open(&db_path)?;
+            alst_srs::attach(&mut store);
             let registry = alst_ext::Registry::load(&alst_ext::registry::BUNDLED, Some(&ext_root));
             let languages = alst_ext::host::language_defs(&registry, &store)?;
             let deinflectors = alst_ext::host::deinflectors(&registry, &store)?;

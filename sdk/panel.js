@@ -5,11 +5,14 @@
 //   const stats = await alst.send({ type: "stats" });          // → extension's onPanelMessage(panelId, msg)
 //   const terms = await alst.call("terms.get", { language, texts: ["hola"] });   // any permitted alst.* call
 //   alst.on("refresh", () => ...);                             // the reader's data changed
+//   alst.on("open", (payload) => ...);                          // a screen was opened with a payload (alst.ui.openScreen)
 // The host also sends the app's theme, applied here as CSS variables on <html> (--bg, --fg, --accent, --role-*, ...).
 
 let nextId = 1;
 const pending = new Map();
 const listeners = new Map();
+let mediaBase = "";
+let lastOpen; // payload of the latest "open" event, replayed to late subscribers
 
 window.addEventListener("message", (e) => {
   const m = e.data;
@@ -23,9 +26,11 @@ window.addEventListener("message", (e) => {
     for (const [name, value] of Object.entries(m.cssVariables ?? {})) {
       document.documentElement.style.setProperty(name, String(value));
     }
+    if (typeof m.mediaBase === "string") mediaBase = m.mediaBase;
     document.documentElement.dataset.alstTheme = "ready";
   } else if (m.type === "alst-event") {
-    for (const cb of listeners.get(m.name) ?? []) cb();
+    if (m.name === "open") lastOpen = m.payload;
+    for (const cb of listeners.get(m.name) ?? []) cb(m.payload);
   }
 });
 
@@ -46,11 +51,19 @@ export const alst = {
   on(name, cb) {
     if (!listeners.has(name)) listeners.set(name, new Set());
     listeners.get(name).add(cb);
+    if (name === "open" && lastOpen !== undefined) cb(lastOpen);
   },
+  /** `alst.srs.<method>(params)` → host `srs.<method>` (needs srs:read / srs:write). */
+  srs: new Proxy({}, { get: (_t, name) => (params) => request(`srs.${String(name)}`, params ?? {}) }),
+  /** URL of a media-store file (`alstmedia:`), for images and audio in a screen. */
+  mediaUrl: (hash) => `${mediaBase}/${hash}`,
   ui: {
     openTerm: (language, text) => request("ui.openTerm", { language, text }),
     toast: (message, opts) => request("ui.toast", { message, kind: opts?.kind }),
     copyText: (text) => request("ui.copyText", { text }),
+    openScreen: (screenId, payload) => request("ui.openScreen", { screenId, payload }),
+    pickFile: (accept) => request("ui.pickFile", { accept }),
+    openPart: (partId, start) => request("ui.openPart", { partId, start }),
   },
 };
 

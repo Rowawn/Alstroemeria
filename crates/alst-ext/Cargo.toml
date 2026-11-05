@@ -15,3 +15,5 @@ ureq = "3"
 alst-core = { path = "../alst-core" }
 alst-dict = { path = "../alst-dict" }
 alst-text = { path = "../alst-text", default-features = false }
+alst-srs = { path = "../alst-srs" }
+rusqlite = { version = "0.37" }

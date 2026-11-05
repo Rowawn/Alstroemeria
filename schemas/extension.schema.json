@@ -37,7 +37,7 @@
     },
     "permissions": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^(terms:read|terms:write|events:read|dict:read|net:(\\*\\.)?[A-Za-z0-9.-]+)$" }
+      "items": { "type": "string", "pattern": "^(terms:read|terms:write|events:read|dict:read|srs:read|srs:write|net:(\\*\\.)?[A-Za-z0-9.-]+)$" }
     },
     "contributes": {
       "type": "object",
@@ -73,6 +73,29 @@
               "title": { "type": "string" },
               "context": { "enum": ["reader", "term", "global"] }
             }
+          }
+        },
+        "screens": {
+          "type": "array",
+          "description": "Top-level tabs rendering a full-size sandboxed frame (SPEC §11.1)",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "entry"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string", "minLength": 1, "maxLength": 40 },
+              "icon": { "type": "string" },
+              "entry": { "type": "string" }
+            }
+          }
+        },
+        "termActions": {
+          "type": "array",
+          "description": "Buttons in the term editor and word popup; the host calls the named command (SPEC §11.1)",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "command"],
+            "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "command": { "type": "string" } }
           }
         },
         "lookupProviders": {

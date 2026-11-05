@@ -244,6 +244,8 @@ pub struct HostCtx<'a> {
     pub registry: &'a Registry,
     pub store: &'a mut Store,
     pub languages: &'a [LanguageDef],
+    /// Media store, scratch and export folders for `srs.importApkg` / `srs.exportApkg` (SPEC §11.8).
+    pub srs: Option<crate::srs_api::SrsEnv<'a>>,
 }
 
 fn params<T: for<'de> Deserialize<'de>>(p: &Value) -> Result<T> {
@@ -288,6 +290,9 @@ pub fn manifest_for_call(registry: &Registry, store: &Store, ext_id: &str) -> Re
 
 pub fn call(ctx: &mut HostCtx, ext_id: &str, method: &str, p: &Value) -> Result<Value> {
     let m = active_manifest(ctx.registry, ctx.store, ext_id)?.clone();
+    if let Some(name) = method.strip_prefix("srs.") {
+        return crate::srs_api::call(ctx.store, ctx.languages, ctx.srs.as_ref(), &m, name, p);
+    }
     match method {
         "settings.get" => {
             let states = user_states(ctx.store)?;
@@ -513,7 +518,7 @@ mod tests {
         }
 
         fn call(&mut self, ext: &str, method: &str, p: Value) -> Result<Value> {
-            call(&mut HostCtx { registry: &self.registry, store: &mut self.store, languages: &self.languages }, ext, method, &p)
+            call(&mut HostCtx { registry: &self.registry, store: &mut self.store, languages: &self.languages, srs: None }, ext, method, &p)
         }
     }
 
@@ -672,5 +677,87 @@ mod tests {
         let rules = deinflectors(&f.registry, &f.store).unwrap();
         assert!(rules.contains_key("ja") && !rules.contains_key("ko") && !rules.contains_key("es"));
         assert!(!rules["ja"].deinflect("食べさせられた").iter().all(|c| c.text != "食べる"));
+    }
+
+    #[test]
+    fn srs_methods_check_srs_permissions() {
+        let mut f = Fixture::new(
+            "srs",
+            &[
+                ("a.none", json!({})),
+                ("a.read", json!({ "permissions": ["srs:read"] })),
+                ("a.write", json!({ "permissions": ["srs:write"] })),
+            ],
+        );
+        f.store.set_setting("srs.defaultDeckKind", &json!("concept")).unwrap();
+        let term = f.store.save_term("es", "gato", "gato", 1, &TermPatch { status: Some(1), ..Default::default() }).unwrap().id;
+        for (m, p) in [
+            ("srs.settings", json!({})),
+            ("srs.decks", json!({})),
+            ("srs.queue", json!({})),
+            ("srs.stats", json!({})),
+            ("srs.browse", json!({})),
+            ("srs.answer", json!({ "cardId": "x", "rating": 3 })),
+            ("srs.addTerm", json!({ "termId": term })),
+            ("srs.setSetting", json!({ "key": "srs.statusLink", "value": "reviews-only" })),
+            ("srs.exportApkg", json!({ "deckIds": [] })),
+        ] {
+            assert!(denied(f.call("a.none", m, p.clone())), "a.none {m}");
+        }
+        // Reading does not allow changing.
+        assert!(f.call("a.read", "srs.settings", json!({})).is_ok());
+        assert!(f.call("a.read", "srs.decks", json!({})).is_ok());
+        for (m, p) in [
+            ("srs.addTerm", json!({ "termId": term })),
+            ("srs.answer", json!({ "cardId": "x", "rating": 3 })),
+            ("srs.setSetting", json!({ "key": "srs.statusLink", "value": "reviews-only" })),
+            ("srs.deleteCards", json!({ "cardIds": ["x"] })),
+            ("srs.importApkg", json!({ "uploadId": "x" })),
+        ] {
+            assert!(denied(f.call("a.read", m, p.clone())), "a.read {m}");
+        }
+        // Writing allows changing and reading what it changes.
+        let created = f.call("a.write", "srs.addTerm", json!({ "termId": term })).unwrap();
+        let card = created["created"][0].as_str().unwrap().to_string();
+        assert_eq!(f.call("a.write", "srs.queue", json!({})).unwrap().as_array().unwrap().len(), 1);
+        let r = f.call("a.write", "srs.answer", json!({ "cardId": card, "rating": 3, "durationMs": 1200 })).unwrap();
+        assert_eq!(r["state"]["queue"], "learning");
+        assert!(f.call("a.write", "srs.undo", json!({ "cardId": card })).unwrap()["undone"].as_bool().unwrap());
+        // Settings are validated; unknown methods and bad parameters are errors, not panics.
+        assert!(f.call("a.write", "srs.setSetting", json!({ "key": "srs.statusLink", "value": "nonsense" })).is_err());
+        assert!(f.call("a.write", "srs.setSetting", json!({ "key": "terms.status", "value": 1 })).is_err());
+        assert!(f.call("a.write", "srs.nope", json!({})).is_err());
+        assert!(f.call("a.write", "srs.answer", json!({ "cardId": card, "rating": 9 })).is_err());
+        let card_view = f.call("a.read", "srs.card", json!({ "cardId": card })).unwrap();
+        assert_eq!(card_view["next"].as_array().unwrap().len(), 4);
+        assert!(card_view["rendered"]["front"].as_str().unwrap().contains("gato"));
+    }
+
+    #[test]
+    fn mine_accepts_what_the_module_sends() {
+        let mut f = Fixture::new("mine", &[("a.write", json!({ "permissions": ["srs:write"] }))]);
+        let r = f.call(
+            "a.write",
+            "srs.mine",
+            json!({
+                "language": "es", "text": "gato", "sentence": "El <b>gato</b> duerme.", "target": "gato", "meaning": "cat", "sentenceMeaning": "",
+                "audio": "[sound:alstclip:ab:1:2]", "source": { "workId": "w", "partId": "p", "start": 0, "end": 15, "cue": { "start": 1, "end": 2, "mediaHash": "ab" } },
+                "tags": ["mined"],
+            }),
+        );
+        assert!(r.is_ok(), "{r:?}");
+        let b = f.call("a.write", "srs.browse", json!({})).unwrap();
+        assert!(b.to_string().contains("gato"), "{b}");
+        // Deck-level suspend and delete, then the word can be added again.
+        let deck = f.call("a.write", "srs.decks", json!({})).unwrap()[0]["id"].as_str().unwrap().to_string();
+        f.call("a.write", "srs.suspendDeck", json!({ "deckId": deck })).unwrap();
+        let d = f.call("a.write", "srs.decks", json!({})).unwrap();
+        assert_eq!(d[0]["suspended"], d[0]["total"]);
+        f.call("a.write", "srs.suspendDeck", json!({ "deckId": deck, "suspended": false })).unwrap();
+        assert_eq!(f.call("a.write", "srs.decks", json!({})).unwrap()[0]["suspended"], 0);
+        f.call("a.write", "srs.deleteDeck", json!({ "deckId": deck })).unwrap();
+        assert!(f.call("a.write", "srs.decks", json!({})).unwrap().as_array().unwrap().is_empty());
+        let again = f.call("a.write", "srs.addTerm", json!({ "language": "es", "text": "gato" })).unwrap();
+        assert_eq!(again["created"].as_array().unwrap().len(), 1, "a deleted deck's word can be added again");
     }
 }

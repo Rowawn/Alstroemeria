@@ -4,6 +4,7 @@ pub mod db;
 pub mod hlc;
 pub mod media;
 mod rekey;
+pub mod srs;
 pub mod store;
 pub mod sync;
 pub mod update;

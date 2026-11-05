@@ -9,6 +9,8 @@ pub enum Permission {
     TermsWrite,
     EventsRead,
     DictRead,
+    SrsRead,
+    SrsWrite,
     /// Exact host (`example.org`) or subdomain wildcard (`*.example.org`).
     Net(String),
 }
@@ -20,6 +22,8 @@ pub enum Need<'a> {
     TermsWrite,
     EventsRead,
     DictRead,
+    SrsRead,
+    SrsWrite,
     Net(&'a str),
 }
 
@@ -30,6 +34,8 @@ impl Permission {
             "terms:write" => Ok(Self::TermsWrite),
             "events:read" => Ok(Self::EventsRead),
             "dict:read" => Ok(Self::DictRead),
+            "srs:read" => Ok(Self::SrsRead),
+            "srs:write" => Ok(Self::SrsWrite),
             _ => match s.strip_prefix("net:") {
                 Some(host) if valid_pattern(host) => Ok(Self::Net(host.to_ascii_lowercase())),
                 Some(host) => Err(Error::Manifest(format!("invalid net permission host '{host}'"))),
@@ -45,6 +51,8 @@ impl Permission {
             "terms:write" => "Change your vocabulary (statuses, translations, notes)".into(),
             "events:read" => "Read your activity history (reading and lookup events)".into(),
             "dict:read" => "Look words up in your dictionaries".into(),
+            "srs:read" => "Read your review cards, decks and review history".into(),
+            "srs:write" => "Change your review cards, decks and history (answer, add, edit, import, export)".into(),
             _ => match s.strip_prefix("net:") {
                 Some(h) if h.starts_with("*.") => format!("Connect to any subdomain of {} over the internet", &h[2..]),
                 Some(h) => format!("Connect to {h} over the internet"),
@@ -54,7 +62,7 @@ impl Permission {
     }
 
     pub fn is_warning(s: &str) -> bool {
-        s == "terms:write" || s.starts_with("net:")
+        s == "terms:write" || s == "srs:write" || s.starts_with("net:")
     }
 }
 
@@ -91,7 +99,11 @@ pub fn allows(manifest: &Manifest, need: &Need) -> bool {
         (Permission::TermsRead, Need::TermsRead)
         | (Permission::TermsWrite, Need::TermsWrite)
         | (Permission::EventsRead, Need::EventsRead)
-        | (Permission::DictRead, Need::DictRead) => true,
+        | (Permission::DictRead, Need::DictRead)
+        | (Permission::SrsRead, Need::SrsRead)
+        | (Permission::SrsWrite, Need::SrsWrite) => true,
+        // Changing cards implies reading them.
+        (Permission::SrsWrite, Need::SrsRead) => true,
         // Writing implies the ability to read what you're allowed to change.
         (Permission::TermsWrite, Need::TermsRead) => true,
         (Permission::Net(pat), Need::Net(host)) => host_matches(pat, host),
@@ -201,5 +213,18 @@ mod tests {
         ] {
             assert!(check_net(&m, bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn srs_permissions_parse_describe_and_imply() {
+        assert_eq!(Permission::parse("srs:read").unwrap(), Permission::SrsRead);
+        assert_eq!(Permission::parse("srs:write").unwrap(), Permission::SrsWrite);
+        assert!(Permission::is_warning("srs:write") && !Permission::is_warning("srs:read"));
+        assert!(Permission::describe("srs:write").contains("Change"));
+        let (r, w, none) = (manifest(&["srs:read"]), manifest(&["srs:write"]), manifest(&[]));
+        assert!(allows(&r, &Need::SrsRead) && !allows(&r, &Need::SrsWrite));
+        assert!(allows(&w, &Need::SrsWrite) && allows(&w, &Need::SrsRead), "writing implies reading");
+        assert!(!allows(&none, &Need::SrsRead) && !allows(&none, &Need::SrsWrite));
+        assert!(!allows(&w, &Need::TermsRead), "srs:write grants nothing else");
     }
 }

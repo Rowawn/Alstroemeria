@@ -8,6 +8,7 @@ pub mod net;
 pub mod perm;
 pub mod registry;
 pub mod resolve;
+pub mod srs_api;
 
 pub use manifest::{API_VERSION, Kind, Manifest, RuntimeType, settings_with_defaults, validate_settings};
 pub use perm::{Need, Permission};

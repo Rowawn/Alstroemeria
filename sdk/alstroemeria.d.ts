@@ -123,6 +123,28 @@ export interface LookupInput {
   sentence: string;
 }
 
+export interface SrsDeck { id: string; name: string; kind: "classic" | "concept"; language: string | null; configId: string | null; new: number; learning: number; review: number; total: number; suspended: number }
+export interface SrsCard {
+  cardId: string;
+  rendered: { front: string; back: string; css: string; kind: "classic" | "concept"; deck: string; noteId: string | null; example: { partId: string; start: number; end: number; mined: boolean; text: string } | null };
+  state: { queue: string; due: number; stability: number | null; difficulty: number | null; step: number; reps: number; lapses: number; lastReview: number | null };
+  next: { rating: number; queue: string; due: number; inMs: number }[];
+  suspended: boolean;
+  media: Record<string, string>;
+}
+export interface SrsBrowseRow { cardId: string; noteId: string | null; deckId: string; deck: string; queue: string; due: number; suspended: boolean; stability: number | null; title: string; tags: string[]; meaning: string | null; direction: string | null }
+export interface SrsStats { forecast: number[]; reviewsPerDay: number[]; retention: number | null; retentionSample: number; cards: { new: number; learning: number; review: number; suspended: number } }
+
+/** What the host passes to the command of a `contributes.termActions` entry (SPEC §11.1). */
+export interface TermActionArgs {
+  term: string;
+  language: string;
+  sentence: { text: string; start: number; end: number };
+  partId: string;
+  workId: string;
+  cue?: { start: number; end: number; mediaHash: string };
+}
+
 // ---- the `alst` object ---------------------------------------------------------------------------------
 
 export interface Alst {
@@ -173,6 +195,51 @@ export interface Alst {
     /** Open the term editor in the reader. */
     openTerm(language: string, text: string): Promise<void>;
     copyText(text: string): Promise<void>;
+    /** Show one of your `contributes.screens` over whatever is open; the screen gets `payload` as its `open` event. */
+    openScreen(screenId: string, payload?: unknown): Promise<void>;
+    /** Ask the user for a file; resolves with an upload id to pass to host calls such as `srs.importApkg`, or null. */
+    pickFile(accept?: string): Promise<{ uploadId: string; name: string } | null>;
+    /** Open a part in the reader. */
+    openPart(partId: string, start?: number): Promise<void>;
+  };
+  /** Spaced repetition (SPEC §11). Reads need `srs:read`; changes need `srs:write` (which includes reading). */
+  srs: {
+    settings(): Promise<{ cardCreation: "opt-in" | "automatic"; statusLink: "linked" | "reviews-only"; productionCards: boolean; defaultDeckKind: "classic" | "concept" }>;
+    decks(p?: { tz?: number }): Promise<SrsDeck[]>;
+    queue(p?: { deckId?: string; limit?: number; tz?: number }): Promise<{ cardId: string; deckId: string; queue: string; due: number }[]>;
+    /** The card rendered for review, its state, when each answer would bring it back, and the media it uses (name → hash). */
+    card(p: { cardId: string; tz?: number }): Promise<SrsCard>;
+    browse(p?: { text?: string; deckId?: string; tag?: string; state?: string; suspended?: boolean; limit?: number; offset?: number }): Promise<SrsBrowseRow[]>;
+    note(p: { noteId: string }): Promise<{ id: string; noteTypeId: string; noteType: string; fieldNames: string[]; fields: string[]; tags: string[]; deckId: string; guid: string | null; cards: { id: string; ord: number; queue: string }[] }>;
+    noteTypes(): Promise<{ id: string; name: string; kind: string; fields: string[] }[]>;
+    stats(p?: { tz?: number }): Promise<SrsStats>;
+    learningCount(p: { language: string }): Promise<{ count: number }>;
+    deckConfig(p: { deckId: string }): Promise<Record<string, unknown>>;
+    /** Rebuild the example sentences of this language's concept cards if the library changed. */
+    refreshPool(p: { language: string }): Promise<{ rows: number | null; upToDate: boolean }>;
+    // srs:write
+    answer(p: { cardId: string; rating: 1 | 2 | 3 | 4; durationMs?: number; example?: { partId: string; start: number }; tz?: number }): Promise<{ reviewId: string; state: Record<string, unknown> }>;
+    undo(p: { cardId: string }): Promise<{ undone: boolean }>;
+    /** `termId`, or `language` + `text` (the term is found by its key, or created at status 1). */
+    addTerm(p: { termId?: string; language?: string; text?: string; onlyIfAutomatic?: boolean }): Promise<{ termId: string; created: string[] }>;
+    addAllLearning(p: { language: string }): Promise<{ terms: number }>;
+    onTermStatus(p: { termId: string; to: number }): Promise<void>;
+    mine(p: { termId?: string; language?: string; text?: string; sentence: string; target: string; meaning?: string; sentenceMeaning?: string; audio?: string; sourceLabel?: string; source?: unknown; tags?: string[]; deckId?: string }): Promise<{ noteId: string; cardIds: string[] }>;
+    editNote(p: { noteId: string; fields?: string[]; tags?: string[] }): Promise<void>;
+    suspend(p: { cardIds: string[]; suspended?: boolean }): Promise<void>;
+    moveCards(p: { cardIds: string[]; deckId: string }): Promise<void>;
+    deleteCards(p: { cardIds: string[] }): Promise<void>;
+    /** Suspend or release every card of a deck that the user suspended (status-link suspensions are left alone). */
+    suspendDeck(p: { deckId: string; suspended?: boolean }): Promise<void>;
+    /** Delete a deck with its cards and notes. */
+    deleteDeck(p: { deckId: string }): Promise<void>;
+    createDeck(p: { name: string; kind?: "classic" | "concept"; language?: string }): Promise<{ id: string }>;
+    setDeckConfig(p: { configId: string; newPerDay?: number; reviewsPerDay?: number; desiredRetention?: number; learningSteps?: string[]; relearningSteps?: string[]; maxIntervalDays?: number; burySiblings?: boolean; dayStartsHour?: number }): Promise<void>;
+    setSetting(p: { key: "srs.cardCreation" | "srs.statusLink" | "srs.defaultDeckKind" | "srs.productionCards"; value: string | boolean }): Promise<void>;
+    /** Import a legacy-layout `.apkg`/`.colpkg` the user chose with `ui.pickFile`. */
+    importApkg(p: { uploadId: string; language?: string; tz?: number }): Promise<Record<string, number>>;
+    /** Needs only `srs:read`. Writes the file to the user's Downloads folder (or the app's exports folder). */
+    exportApkg(p: { deckIds: string[]; tz?: number }): Promise<{ path: string; report: Record<string, number> }>;
   };
   reader: {
     current(): Promise<{ workId: string; partId: string; language: string } | null>;

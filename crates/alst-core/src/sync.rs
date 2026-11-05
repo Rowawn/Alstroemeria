@@ -258,9 +258,22 @@ impl Store {
         self.conn.pragma_update(None, "foreign_keys", "OFF")?;
         let result = self.apply_inner(batch);
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
-        let (touched, newest) = result?;
+        let (mut touched, newest) = result?;
         if newest > 0 {
             self.clock.observe(newest as u64);
+        }
+        // Card caches are derived from review events (SPEC §11.6): replay every card the batch touched.
+        let mut cards: BTreeSet<String> = batch
+            .events
+            .iter()
+            .filter(|e| e.ty.starts_with("review") && e.subject_type.as_deref() == Some("card"))
+            .filter_map(|e| e.subject_id.clone())
+            .collect();
+        cards.extend(batch.changes.iter().filter(|c| c.tbl == "cards").map(|c| c.row.clone()));
+        if !cards.is_empty() {
+            let ids: Vec<String> = cards.into_iter().collect();
+            self.replay_cards(&ids)?;
+            touched.insert("cards".to_string());
         }
         Ok(touched)
     }

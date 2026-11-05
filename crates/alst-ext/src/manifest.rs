@@ -68,6 +68,24 @@ pub struct CommandDecl {
     pub context: Option<String>,
 }
 
+/// A top-level tab that renders a full-size sandboxed frame (SPEC §11.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenDecl {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub entry: String,
+}
+
+/// A button in the term editor and the word popup; the host calls the extension's `command` (SPEC §11.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermActionDecl {
+    pub id: String,
+    pub title: String,
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LookupProviderDecl {
     pub id: String,
@@ -86,6 +104,10 @@ pub struct Contributes {
     pub commands: Vec<CommandDecl>,
     #[serde(default)]
     pub lookup_providers: Vec<LookupProviderDecl>,
+    #[serde(default)]
+    pub screens: Vec<ScreenDecl>,
+    #[serde(default)]
+    pub term_actions: Vec<TermActionDecl>,
     #[serde(default)]
     pub importers: Vec<Value>,
     #[serde(default)]
@@ -317,12 +339,31 @@ impl Manifest {
                 }
             }
         }
+        for sc in &c.screens {
+            if !is_ident(&sc.id, "-_") || !seen.insert(("screen", sc.id.as_str())) {
+                return bad(format!("invalid or duplicate screen id '{}'", sc.id));
+            }
+            if !is_safe_path(&sc.entry) {
+                return bad(format!("screen '{}' entry '{}' is not a safe relative path", sc.id, sc.entry));
+            }
+            if sc.title.trim().is_empty() || sc.title.len() > 40 {
+                return bad(format!("screen '{}' needs a title of 1-40 characters", sc.id));
+            }
+        }
+        for a in &c.term_actions {
+            if !is_ident(&a.id, "-_.") || !seen.insert(("termAction", a.id.as_str())) {
+                return bad(format!("invalid or duplicate term action id '{}'", a.id));
+            }
+            if !c.commands.iter().any(|cmd| cmd.id == a.command) {
+                return bad(format!("term action '{}' calls command '{}', which is not declared in contributes.commands", a.id, a.command));
+            }
+        }
         if let Some(s) = &c.settings {
             validate_settings_schema(s)?;
         }
         let runs_code = matches!(self.runtime.ty, RuntimeType::Js | RuntimeType::Wasm);
-        if !runs_code && (!c.decorators.is_empty() || !c.panels.is_empty() || !c.commands.is_empty() || !c.lookup_providers.is_empty()) {
-            return bad("decorators, panels, commands and lookup providers need a js or wasm runtime".into());
+        if !runs_code && (!c.decorators.is_empty() || !c.panels.is_empty() || !c.commands.is_empty() || !c.lookup_providers.is_empty() || !c.screens.is_empty() || !c.term_actions.is_empty()) {
+            return bad("decorators, panels, screens, commands, term actions and lookup providers need a js or wasm runtime".into());
         }
         Ok(())
     }
@@ -522,5 +563,32 @@ mod tests {
         for bad in ["", "/x", "../x", "a/../b", "a//b", "a\\b", "C:/x", "./a"] {
             assert!(!is_safe_path(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn screens_and_term_actions_are_validated() {
+        let ok = |c: Value| with(|v| v["contributes"] = c);
+        let good = serde_json::json!({
+            "commands": [{ "id": "mine", "title": "Mine sentence", "context": "term" }],
+            "screens": [{ "id": "review", "title": "Review", "icon": "cards", "entry": "screen.html" }],
+            "termActions": [{ "id": "add", "title": "Add to review", "command": "mine" }]
+        });
+        let m = ok(good.clone()).unwrap();
+        assert_eq!(m.contributes.screens[0].title, "Review");
+        assert_eq!(m.contributes.term_actions[0].command, "mine");
+        let mut v = good.clone();
+        v["termActions"][0]["command"] = "unknown".into();
+        assert!(ok(v).is_err(), "a term action must name a declared command");
+        let mut v = good.clone();
+        v["screens"][0]["entry"] = "../screen.html".into();
+        assert!(ok(v).is_err());
+        let mut v = good.clone();
+        v["screens"] = serde_json::json!([{ "id": "a", "title": "A", "entry": "a.html" }, { "id": "a", "title": "B", "entry": "b.html" }]);
+        assert!(ok(v).is_err(), "duplicate screen id");
+        let mut v = good.clone();
+        v["screens"][0]["title"] = "".into();
+        assert!(ok(v).is_err());
+        // Declarative extensions can't contribute screens (they have no code to serve them).
+        assert!(with(|v| { v["runtime"] = serde_json::json!({ "type": "declarative" }); v["contributes"] = serde_json::json!({ "screens": [{ "id": "s", "title": "S", "entry": "s.html" }] }); }).is_err());
     }
 }

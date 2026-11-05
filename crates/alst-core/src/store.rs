@@ -11,6 +11,7 @@ pub struct Store {
     pub(crate) clock: hlc::Hlc,
     site_id: String,
     pub(crate) tables: crate::sync::Tables,
+    pub(crate) replay_hook: Option<crate::srs::ReplayHook>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,9 +232,11 @@ pub struct EventRow {
     pub subject_type: Option<String>,
     pub subject_id: Option<String>,
     pub payload: serde_json::Value,
+    /// Written on this device (not received by sync): side effects of an event run only where it happened (SPEC §11.5).
+    pub own: bool,
 }
 
-fn event_row(r: &rusqlite::Row, o: usize) -> rusqlite::Result<EventRow> {
+fn event_row(r: &rusqlite::Row, o: usize, me: &str) -> rusqlite::Result<EventRow> {
     let hlc: i64 = r.get(o + 1)?;
     let payload: String = r.get(o + 6)?;
     Ok(EventRow {
@@ -244,6 +247,7 @@ fn event_row(r: &rusqlite::Row, o: usize) -> rusqlite::Result<EventRow> {
         subject_type: r.get(o + 4)?,
         subject_id: r.get(o + 5)?,
         payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+        own: r.get::<_, String>(o + 7)? == me,
     })
 }
 
@@ -302,7 +306,7 @@ impl Store {
             |r| r.get(0),
         )?;
         let tables = crate::sync::discover(&conn)?;
-        Ok(Self { conn, clock: hlc::Hlc::new(last as u64), site_id, tables })
+        Ok(Self { conn, clock: hlc::Hlc::new(last as u64), site_id, tables, replay_hook: None })
     }
 
     pub fn site_id(&self) -> &str {
@@ -881,10 +885,10 @@ impl Store {
     /// Events inserted after SQLite rowid `after` (for forwarding to the UI), oldest first.
     pub fn events_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, EventRow)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rowid, id, hlc, type, language, subject_type, subject_id, payload FROM events
+            "SELECT rowid, id, hlc, type, language, subject_type, subject_id, payload, site_id FROM events
              WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![after, limit as i64], |r| Ok((r.get::<_, i64>(0)?, event_row(r, 1)?)))?;
+        let rows = stmt.query_map(params![after, limit as i64], |r| Ok((r.get::<_, i64>(0)?, event_row(r, 1, &self.site_id)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -901,14 +905,14 @@ impl Store {
             None => (None, None),
         };
         let mut stmt = self.conn.prepare(
-            "SELECT id, hlc, type, language, subject_type, subject_id, payload FROM events
+            "SELECT id, hlc, type, language, subject_type, subject_id, payload, site_id FROM events
              WHERE (?1 IS NULL OR type = ?1)
                AND (?2 IS NULL OR substr(type, 1, length(?2)) = ?2)
                AND (?3 IS NULL OR hlc >= ?3)
              ORDER BY hlc DESC, id DESC LIMIT ?4",
         )?;
         let since_hlc = since_ms.map(|ms| hlc::pack(ms.max(0) as u64, 0) as i64);
-        let rows = stmt.query_map(params![exact, prefix, since_hlc, limit as i64], |r| event_row(r, 0))?;
+        let rows = stmt.query_map(params![exact, prefix, since_hlc, limit as i64], |r| event_row(r, 0, &self.site_id))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -1307,7 +1311,7 @@ fn insert_event(
 }
 
 /// Update several columns of one row and record each in `_changes`.
-fn update_cols(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], stamp: u64, site: &str) -> Result<()> {
+pub(crate) fn update_cols(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], stamp: u64, site: &str) -> Result<()> {
     for (col, v) in cols {
         let n = tx.execute(&format!("UPDATE {tbl} SET {col} = ?1 WHERE id = ?2"), params![v, id])?;
         if n == 0 {
@@ -1318,7 +1322,7 @@ fn update_cols(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], st
     Ok(())
 }
 
-fn insert_row(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], stamp: u64, site: &str) -> Result<()> {
+pub(crate) fn insert_row(tx: &Transaction, tbl: &str, id: &str, cols: &[(&str, Value)], stamp: u64, site: &str) -> Result<()> {
     let names: Vec<&str> = cols.iter().map(|(n, _)| *n).collect();
     let marks: Vec<String> = (2..cols.len() + 2).map(|i| format!("?{i}")).collect();
     let sql = format!("INSERT INTO {tbl} (id, {}) VALUES (?1, {})", names.join(", "), marks.join(", "));

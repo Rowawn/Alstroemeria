@@ -129,7 +129,7 @@ Append-only, never updated. It records what happened, so future modules (statist
 | `term.lookup` | `{source: "popup"|"dict", dict_id}` |
 | `part.read` | `{words_read, unknown_count, duration_ms}` |
 | `media.listen` | `{part_id, seconds}` |
-| `review`, `review.undo` | see §11.6 (M9) |
+| `review`, `review.undo`, `review.state` | see §11.6 and §11.11 (M9) |
 | `exposure` | `{concept_ids, part_id}` (M9, §11.6) |
 
 Extensions may emit events namespaced by their id (`<ext-id>/<type>`).
@@ -493,6 +493,10 @@ alst.ui.openPanel(panelId)
 alst.ui.openTerm(language, text)                      // opens the term editor in the reader
 alst.ui.copyText(text)                                // clipboard, via the host
 alst.reader.current() → { workId, partId, language } | null
+alst.ui.openScreen(screenId, payload?)                // shows one of the extension's own screens over the app (M9)
+alst.ui.pickFile(accept?) → { uploadId, name } | null // the host asks the user for a file and stages it (M9)
+alst.ui.openPart(partId, start?)                      // opens a part in the reader (M9)
+alst.srs.<method>(params)                             // srs:read / srs:write, see §11.11 (M9)
 ```
 
 Extension module shape (the `runtime.entry` exports):
@@ -1109,6 +1113,55 @@ Setting `srs.statusLink`: `linked` (default) or `reviews-only`.
 
 FSRS parameter optimisation, the `.anki21b` layout, AnkiWeb or AnkiConnect sync, image occlusion,
 `{{type:}}` answer typing, Anki add-ons, scheduling credit from exposure, third-party scheduler policies.
+
+### 11.11 Implementation notes (M9)
+
+What the build settled, where it adds to §11.1–11.9.
+
+- **Crates.** `alst-srs` depends on `alst-core` (and `alst-ext` on `alst-srs`). The one hook core needs from it is
+  `Store::set_replay_hook`: `alst_srs::attach(&mut store)` installs the replay that `apply` runs for every card whose
+  review events or row arrived (`src-tauri` and the sync tests call it when they open a store).
+- **Card cache.** `queue, due, stability, difficulty, step, reps, lapses, last_review` are written by `Store::set_card_cache`
+  and are **not** in `_changes`: they are a pure function of the card's events and its deck options, so every device derives
+  them. `suspended` and `buried_until` are ordinary synced columns. `suspended` is 0, 1 (by the user) or 2 (by the status link,
+  §11.7), and only a 2 is released by the link.
+- **Events.** `review` payload: `{card_id, rating, duration_ms, at, tz, policy, before: {queue, s, d, due}, example?}`.
+  Replay orders a card's events by `(payload.at, hlc, site, id)`, not by the HLC, so imports can carry old dates without being
+  stamped in the past (a back-dated HLC would never be sent, §9.2). `tz` is the offset east of UTC when the answer was given, so
+  the day boundary replays identically in any time zone. `review.state` `{at, queue, due, stability, difficulty, step, reps,
+  lapses, last_review}` is a snapshot that resets the card (Anki imports; its id includes its content so a changed re-import adds
+  a newer one). `review.undo` `{review_id}` removes that review from the replay.
+- **Fuzz** is seeded from the card id and its review count (`fuzz_seed`), so replays agree. It is uniform over the algorithm's
+  window; the reference rounds one past it.
+- **Queue.** `plan` builds the day's queue for the whole collection: learning cards due now (or within 20 minutes), reviews due
+  by the end of the scheduling day, then new cards; limits are per deck config and shared down the `::` tree; "bury siblings"
+  is computed from today's (non-undone) answers, so it needs no state. An answer's counts come from `review` events.
+- **Pool.** Sentence offsets are UTF-16 code units, like tokens and cues. The pool is built with a `Segmenter` (the language's
+  tokenizer in the app, a simple one in tests). `known` for scoring means status 3–5 or 99. `srs.refreshPool` rebuilds a
+  language's pools when its parts or cards changed. The shown sentence is derived from review events (and the local column), so
+  no write is needed to show a card.
+- **Concept key.** The term's lemma if it has one, else its text key; all terms with that key share the concept.
+- **Anki import.** Reads `collection.anki21`, else `collection.anki2`; `.anki21b` alone is refused with the message in §11.8.
+  Ids: decks by name, note types by Anki model id, notes by guid, cards by `(note, ord)`, deck options by name and content.
+  Review cards get Anki's due date; their memory state comes from `data` (`s`, `d`), else from replaying the imported history
+  through FSRS, else from the interval. Revlog rows of type "manual" and ease 0 are skipped.
+- **Anki export** writes the collection under both `collection.anki21` and `collection.anki2`, so older and newer Anki find it.
+  The collection's creation day is set before the earliest due date, because Anki counts review due dates in days from it.
+  Review history is exported without intervals (the log does not keep them). Not verified in Anki itself yet.
+- **Host API `alst.srs.*`** (`srs:read` / `srs:write`; writing includes reading): `settings, decks, queue, card, browse, note,
+  noteTypes, stats, learningCount, deckConfig, refreshPool, exportApkg` (read; export only reads, and writes the file to the
+  Downloads folder or the app's `exports` folder) and `answer, undo, addTerm, addAllLearning, onTermStatus, mine, editNote,
+  suspend, suspendDeck, deleteDeck, moveCards, deleteCards, createDeck, setDeckConfig, setSetting, importApkg` (write). `addTerm` and `mine` take a
+  `termId` or `language` + `text` (a missing term is created at status 1).
+- **Extension points.** `contributes.screens` open as tabs and, with `alst.ui.openScreen`, over whatever is open; their frame has
+  the panel CSP plus `alstmedia:` for images and audio. The host sends the frame `open` events with a payload and `mediaBase`
+  with the theme. `contributes.termActions` appear among the term editor's buttons; the command gets `{term, language, sentence:
+  {text, start, end}, partId, workId, cue?: {start, end, mediaHash}}`. Core events forwarded to extensions carry `own` (written
+  on this device), which the module uses for side effects (§11.5).
+- **Card HTML** is shown in a nested `sandbox="allow-scripts"` frame inside the module's screen, so a card's script cannot call
+  `alst.*`; it can only ask the screen to play a sound or open the reader.
+- **Known gaps:** "Open in reader" opens the part but does not scroll to the sentence; editing a concept card's word goes through
+  the term editor, not the module; FSRS parameters are not optimised (defaults, or imported).
 
 ## 12. Repository layout
 

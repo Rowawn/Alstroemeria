@@ -12,6 +12,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("../migrations/0004_token_cache.sql")),
     (5, include_str!("../migrations/0005_sync.sql")),
     (6, include_str!("../migrations/0006_packs.sql")),
+    (7, include_str!("../migrations/0007_srs.sql")),
 ];
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -56,7 +57,7 @@ mod tests {
             "works", "parts", "concepts", "terms", "term_parents", "media", "extension_state",
             "ext_data", "settings", "events", "_changes", "local_settings", "local_peers",
             "local_dict_dicts", "local_dict_entries", "local_dict_meta", "local_token_cache", "local_sync_clock",
-            "local_sync_pending", "dictionaries", "extension_packages", "packs",
+            "local_sync_pending", "dictionaries", "extension_packages", "packs", "deck_configs", "decks", "note_types", "notes", "cards", "note_media", "local_example_pool",
         ] {
             let n: i64 = conn
                 .query_row("SELECT count(*) FROM sqlite_master WHERE name = ?1", [t], |r| r.get(0))

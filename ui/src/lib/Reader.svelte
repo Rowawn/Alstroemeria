@@ -334,17 +334,53 @@
     return extHost.lookup(view.work.language, input, $state.snapshot(resolved) as ResolvedView);
   }
 
-  type Cmd = { ext: ExtInfo; id: string; title: string };
+  type Cmd = { ext: ExtInfo; id: string; title: string; action?: boolean };
   function commandsFor(context: "term" | "reader"): Cmd[] {
-    return (resolved?.active ?? []).flatMap((ext) =>
+    const cmds: Cmd[] = (resolved?.active ?? []).flatMap((ext) =>
       ext.contributes.commands
         .filter((c) => c.context === context)
         .map((c) => ({ ext, id: c.id, title: c.title })),
     );
+    // Term actions (SPEC §11.1) appear beside the term editor's commands.
+    if (context === "term") {
+      for (const ext of resolved?.active ?? []) {
+        for (const a of ext.contributes.termActions ?? []) cmds.push({ ext, id: a.id, title: a.title, action: true });
+      }
+    }
+    return cmds;
+  }
+
+  /** The selected term's whole sentence with its range in the part text, and the cue that covers it (SPEC §11.1). */
+  function sentenceInfo() {
+    if (!view || !range) return null;
+    const su = units.filter((u) => u.sentence === units[range.lo].sentence);
+    const raw = su.map((u) => u.text).join("");
+    const lead = raw.length - raw.trimStart().length;
+    const text = raw.trim();
+    const start = su[0].start + lead;
+    const end = start + text.length;
+    const cue = view.timing?.cues.find((c) => start >= c.a && start < Math.max(c.b, c.a + 1));
+    return {
+      sentence: { text, start, end },
+      cue: cue && view.media ? { start: cue.start, end: cue.end, mediaHash: view.media.hash } : undefined,
+    };
   }
 
   async function runCommand(c: Cmd, context: "term" | "reader") {
     if (!view) return;
+    if (c.action) {
+      const info = sentenceInfo();
+      if (!info) return;
+      await extHost.runTermAction(c.ext, view.work.language, c.id, {
+        term: selectedText,
+        language: view.work.language,
+        sentence: info.sentence,
+        partId,
+        workId: view.work.id,
+        cue: info.cue,
+      });
+      return;
+    }
     const args =
       context === "term"
         ? { language: view.work.language, text: selectedText, sentence: sentenceText }

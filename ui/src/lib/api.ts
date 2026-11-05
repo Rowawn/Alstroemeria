@@ -276,6 +276,7 @@ export const api = {
   setProvider: (language: string, capability: string, extId: string) =>
     invoke<void>("set_provider", { language, capability, extId }),
   setDecoratorOrder: (language: string, ids: string[]) => invoke<void>("set_decorator_order", { language, ids }),
+  uploadStaged: (file: File, onProgress?: (fraction: number) => void) => uploadMedia(file, onProgress),
   extCall: (extId: string, method: string, params: unknown) => invoke<unknown>("ext_call", { extId, method, params }),
 };
 

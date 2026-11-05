@@ -45,7 +45,7 @@ function fakeWorkerFactory(handlers: Record<string, Handler>, created: string[])
 const info = (id: string, extra: Partial<ExtInfo> = {}): ExtInfo => ({
   id, name: id.toUpperCase(), version: "1.0.0", kind: "addon", description: null, author: null, license: "MIT", source: "installed",
   runtime: "js", entry: "main.js", targets: ["*"], language: null, provides: [], requires: [], optional: [], permissions: [], platforms: null,
-  contributes: { decorators: [], panels: [], commands: [], lookupProviders: [] }, unsupported: [], enabled: true, languages: [], settings: {}, ...extra,
+  contributes: { decorators: [], panels: [], commands: [], lookupProviders: [], screens: [], termActions: [] }, unsupported: [], enabled: true, languages: [], settings: {}, ...extra,
 });
 
 const view = (active: ExtInfo[], extra: Partial<ResolvedView> = {}): ResolvedView => ({
@@ -60,6 +60,8 @@ describe("ExtensionHost", () => {
   let toasts: string[];
   let created: string[];
   let calls: [string, string, unknown][];
+  let opened: [string, string, unknown][];
+  let picked: [string, string][];
   let factory: ReturnType<typeof fakeWorkerFactory>;
   let handlers: Record<string, Handler>;
   let host: ExtensionHost;
@@ -69,11 +71,16 @@ describe("ExtensionHost", () => {
     toasts = [];
     created = [];
     calls = [];
+    opened = [];
+    picked = [];
     handlers = {};
     factory = fakeWorkerFactory(handlers, created);
     const ui: UiBridge = {
       toast: (m) => void toasts.push(m),
       openPanel: () => {}, openTerm: () => {}, copyText: () => {}, readerCurrent: () => null,
+      openScreen: (e, sid, payload) => void opened.push([e, sid, payload]),
+      openPart: () => {},
+      pickFile: async (e, accept) => (picked.push([e, accept]), { uploadId: "up1", name: "deck.apkg" }),
     };
     const deps: HostDeps = {
       createWorker: (id) => factory.create(id),
@@ -153,7 +160,7 @@ describe("ExtensionHost", () => {
   describe("lookup providers (SPEC §16.8)", () => {
     const input = { language: "ja", unit: { text: "食べた", key: "食べる", lemma: "食べる", status: 0 }, tokens: [], sentence: "食べた。" };
     const lp = (id: string, extra: Partial<ExtInfo> = {}) =>
-      info(id, { contributes: { decorators: [], panels: [], commands: [], lookupProviders: [{ id: "l", title: "L" }] }, ...extra });
+      info(id, { contributes: { decorators: [], panels: [], commands: [], lookupProviders: [{ id: "l", title: "L" }], screens: [], termActions: [] }, ...extra });
 
     it("collects sections in decorator order and drops malformed output", async () => {
       handlers.p1 = (m) => (m === "lookup" ? [{ title: "One", items: [{ kind: "text", text: "a" }] }] : null);
@@ -201,7 +208,7 @@ describe("ExtensionHost", () => {
     const mk = (role: string) => () => ({ 0: [{ kind: "color", role }, { kind: "tooltip", text: role }] });
     handlers.d1 = (m) => (m === "decorate" ? mk("verb")() : null);
     handlers.d2 = (m) => (m === "decorate" ? mk("noun")() : null);
-    const dec = { decorators: [{ id: "d", priority: 50 }], panels: [], commands: [], lookupProviders: [] };
+    const dec = { decorators: [{ id: "d", priority: 50 }], panels: [], commands: [], lookupProviders: [], screens: [], termActions: [] };
     const d1 = info("d1", { contributes: dec });
     const d2 = info("d2", { contributes: dec });
     const units = [{ text: "hola", isWord: true, key: "hola", wordCount: 1, status: 0, termId: null, sentence: 0, start: 0, end: 4, tokenRange: [0, 0] as [number, number] }];
@@ -242,5 +249,68 @@ describe("ExtensionHost", () => {
     expect(host.status("a")).toBe("ready");
     host.retain(new Set());
     expect(host.status("a")).toBe("idle");
+  });
+
+  describe("screens, term actions and alst.srs (SPEC §11.1)", () => {
+    const mod = (extra: Partial<ExtInfo["contributes"]> = {}, permissions: string[] = []) =>
+      info("mod", {
+        permissions: permissions.map((id) => ({ id, text: id, warning: false })),
+        contributes: {
+          decorators: [], panels: [], lookupProviders: [],
+          commands: [{ id: "mine", title: "Mine", context: "term" }],
+          screens: [{ id: "review", title: "Review", entry: "screen.html" }],
+          termActions: [{ id: "mine-action", title: "Mine sentence", command: "mine" }],
+          ...extra,
+        },
+      });
+
+    it("openScreen shows only a screen the extension declares, with its payload", async () => {
+      const m = mod();
+      await host.serveApi(m, "alst.ui.openScreen", { screenId: "review", payload: { view: "mine" } });
+      expect(opened).toEqual([["mod", "review", { view: "mine" }]]);
+      expect(() => host.serveApi(m, "alst.ui.openScreen", { screenId: "other" })).toThrow(/no screen/);
+      expect(opened).toHaveLength(1);
+      // Another extension's screen is not reachable by name.
+      expect(() => host.serveApi(info("evil"), "alst.ui.openScreen", { screenId: "review" })).toThrow(/no screen/);
+    });
+
+    it("pickFile is asked on behalf of the calling extension only", async () => {
+      expect(await host.serveApi(mod(), "alst.ui.pickFile", { accept: ".apkg,.colpkg" })).toEqual({ uploadId: "up1", name: "deck.apkg" });
+      expect(picked).toEqual([["mod", ".apkg,.colpkg"]]);
+    });
+
+    it("srs calls go to Rust tagged with the extension id, whatever the caller says", async () => {
+      await host.serveApi(mod({}, ["srs:write"]), "alst.srs.answer", { cardId: "c1", rating: 3, extId: "someone.else" });
+      expect(calls).toEqual([["mod", "srs.answer", { cardId: "c1", rating: 3, extId: "someone.else" }]]);
+    });
+
+    it("a refused srs call reaches the extension as permission_denied", async () => {
+      host = new ExtensionHost({
+        createWorker: (id) => factory.create(id),
+        entryUrl: () => "",
+        extCall: async () => {
+          throw "permission denied: 'mod' needs the srs:write permission";
+        },
+        ui: { toast: () => {}, openPanel: () => {}, openTerm: () => {}, copyText: () => {}, readerCurrent: () => null, openScreen: () => {}, openPart: () => {}, pickFile: async () => null },
+        now: () => 1,
+      });
+      await expect(host.serveApi(mod(), "alst.srs.answer", {})).rejects.toMatchObject({ code: "permission_denied" });
+    });
+
+    it("a term action calls its command with the term, sentence, part and cue", async () => {
+      const m = mod();
+      let got: any;
+      handlers.mod = (method, p) => {
+        if (method === "command") got = p;
+        return null;
+      };
+      const args = {
+        term: "gato", language: "es", sentence: { text: "El gato duerme.", start: 10, end: 25 }, partId: "p1", workId: "w1",
+        cue: { start: 1000, end: 2500, mediaHash: "ab" },
+      };
+      await host.runTermAction(m, "es", "mine-action", args);
+      expect(got).toEqual({ language: "es", id: "mine", args });
+      await expect(host.runTermAction(m, "es", "nope", args)).rejects.toThrow(/no term action/);
+    });
   });
 });
