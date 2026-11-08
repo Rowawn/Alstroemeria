@@ -6,6 +6,17 @@ their own versions.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-07
+
+### Added
+- Content packs (`.alpack`): import a ready-made set of texts with a review screen before anything is added; the library
+  can filter by pack.
+- Spaced-repetition reviews (the SRS module) with the FSRS-6 scheduler: decks, review, browse, stats and deck options.
+- Concept cards for words, each review showing a different example sentence from your reading; mine a sentence from the
+  reader in one tap. Reviews can update a word's status, or the other way round (a setting).
+- Anki import and export of `.apkg` files exported with "Support older Anki versions", including review history.
+- Reviews sync between devices and are merged when two devices reviewed offline.
+
 ## [0.1.1] - 2026-10-28
 
 ### Changed
